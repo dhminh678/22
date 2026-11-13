@@ -20,6 +20,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- BFF chuyển trình duyệt về app sau đăng nhập LinkedIn (exchange_code dùng một lần + state).
+                 Phải trùng LinkedInBffAuth.APP_REDIRECT_URI và APP_REDIRECT_URI của BFF. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.lttbdd.socialagent"
+                    android:host="oauth"
+                    android:path="/linkedin/callback" />
+            </intent-filter>
         </activity>
 
         <!-- Facebook SDK Configuration -->

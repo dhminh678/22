@@ -36,7 +36,6 @@
     <string name="channel_close">Close</string>
     <string name="channel_linkedin_cancelled">LinkedIn login was cancelled</string>
     <string name="channel_linkedin_login_failed">LinkedIn login failed. Please try again.</string>
-    <string name="channel_linkedin_pkce_blocked">LinkedIn cannot be connected right now: LinkedIn has not enabled Native PKCE for this app, or Native PKCE does not accept the OpenID scope this app needs to read the member profile.</string>
     <string name="channel_linkedin_login_timeout">LinkedIn login timed out. Please try again.</string>
     <string name="channel_linkedin_no_browser">No browser found to sign in to LinkedIn.</string>
     <string name="channel_demo_mode_notice">%1$s is not configured in local.properties, connecting in demo mode (no real login)</string>

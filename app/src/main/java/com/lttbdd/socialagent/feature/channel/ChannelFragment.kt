@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
  * Fragment hiển thị và quản lý màn hình Kênh của tôi (F1).
  * Nguồn tham chiếu:
  * - RFC 8252 Section 8.1: không dùng WebView nhúng. Facebook đăng nhập bằng Meta SDK (LoginManager),
- * - LinkedIn mở trình duyệt hệ thống rồi nhận redirect loopback (xem ChannelViewModel.startLinkedInLogin).
+ * - LinkedIn mở trình duyệt hệ thống rồi nhận deep link từ BFF (xem ChannelViewModel.startLinkedInLogin).
  * - AGENTS.md: ViewModel expose StateFlow, Fragment collect bằng repeatOnLifecycle(STARTED), _binding nullable.
  */
 @AndroidEntryPoint
@@ -142,8 +142,8 @@ class ChannelFragment : Fragment() {
 
         binding.btnConnectLinkedIn.setOnClickListener {
             if (viewModel.isLinkedInDemoMode()) {
-                // Chưa cấu hình LINKEDIN_CLIENT_ID -> không có trang đăng nhập thật, báo rõ cho người dùng.
-                showDemoModeNotice("LINKEDIN_CLIENT_ID")
+                // Chưa cấu hình LINKEDIN_MEMBER_CLIENT_ID / LINKEDIN_BFF_URL -> không có đăng nhập thật, báo rõ cho người dùng.
+                showDemoModeNotice("LINKEDIN_MEMBER_CLIENT_ID, LINKEDIN_BFF_URL")
                 viewModel.connectLinkedInDemo()
             } else {
                 viewModel.startLinkedInLogin()
@@ -228,7 +228,6 @@ class ChannelFragment : Fragment() {
         ChannelNotice.FACEBOOK_PAGES_LOAD_FAILED -> R.string.channel_facebook_pages_load_failed
         ChannelNotice.FACEBOOK_LOGIN_CANCELLED, ChannelNotice.FACEBOOK_LOGIN_FAILED ->
             R.string.channel_facebook_login_error
-        ChannelNotice.LINKEDIN_PKCE_BLOCKED -> R.string.channel_linkedin_pkce_blocked
         ChannelNotice.LINKEDIN_LOGIN_CANCELLED -> R.string.channel_linkedin_cancelled
         ChannelNotice.LINKEDIN_LOGIN_FAILED -> R.string.channel_linkedin_login_failed
         ChannelNotice.LINKEDIN_LOGIN_TIMEOUT -> R.string.channel_linkedin_login_timeout

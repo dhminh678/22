@@ -9,19 +9,12 @@ import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.ConnectionStatus
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookUserToken
-import com.lttbdd.socialagent.data.network.LinkedInNativePkce
-import com.lttbdd.socialagent.data.network.LoopbackRedirectServer
+import com.lttbdd.socialagent.data.network.LinkedInBffAuth
 import com.lttbdd.socialagent.data.network.PkceUtil
-import com.lttbdd.socialagent.data.network.RedirectListener
 import com.lttbdd.socialagent.data.repository.ChannelRepository
-import com.lttbdd.socialagent.data.repository.LinkedInNativePkceBlockedException
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.job
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -34,13 +27,14 @@ import javax.inject.Inject
 /**
  * ViewModel xử lý màn hình Kênh của tôi (F1).
  * Nguồn tham chiếu:
- * - RFC 8252: LinkedIn mở trình duyệt hệ thống + redirect loopback; Facebook dùng Meta SDK (LoginManager).
- * - RFC 7636: Sinh code_verifier và code_challenge S256.
- * - RFC 6749: Trao đổi code đổi token; hạn token lấy từ nhà cung cấp.
+ * - RFC 8252: LinkedIn mở trình duyệt hệ thống, BFF chuyển về app bằng deep link; Facebook dùng Meta SDK (LoginManager).
+ * - RFC 7636: PKCE giữa app và BFF (code_verifier, code_challenge S256).
+ * - RFC 6749: Trao đổi code đổi token ở BFF (giữ client_secret); hạn token lấy từ nhà cung cấp.
  */
 @HiltViewModel
 class ChannelViewModel @Inject constructor(
     private val repository: ChannelRepository,
+    private val callbackBus: LinkedInCallbackBus,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<ChannelUiState>(ChannelUiState.Loading)
@@ -68,24 +62,28 @@ class ChannelViewModel @Inject constructor(
     /** Phiên Facebook giữ tạm trong bộ nhớ trong lúc chờ chọn Page; xóa khi chọn xong hoặc hủy. */
     private var pendingFacebookUser: FacebookUserToken? = null
 
+    /** Phiên đăng nhập LinkedIn đang chờ deep link; chỉ nằm trong RAM (verifier không được lưu ở đâu khác). */
+    private class PendingLinkedInLogin(val state: String, val codeVerifier: String)
+
+    private var pendingLinkedIn: PendingLinkedInLogin? = null
     private var linkedInLoginJob: Job? = null
 
-    /** Cấu hình và nguồn redirect tách ra để unit test điều khiển được. */
-    internal var linkedInNativePkceEnabled: Boolean = BuildConfig.LINKEDIN_NATIVE_PKCE_ENABLED
-    internal var linkedInClientId: String = BuildConfig.LINKEDIN_CLIENT_ID.trim()
-    internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
-    internal var openRedirectListener: () -> RedirectListener = { LoopbackRedirectServer.open() }
+    /** Cấu hình tách ra để unit test điều khiển được. Không có secret nào trong app. */
+    internal var linkedInClientId: String = BuildConfig.LINKEDIN_MEMBER_CLIENT_ID.trim()
+    internal var linkedInBffUrl: String = BuildConfig.LINKEDIN_BFF_URL.trim()
+    internal var linkedInLoginTimeoutMillis: Long = LINKEDIN_LOGIN_TIMEOUT_MILLIS
 
     /** Đồng hồ để xác định token hết hạn; tách ra để unit test điều khiển được thời gian. */
     internal var clock: () -> Long = { System.currentTimeMillis() }
 
     init {
         loadChannels()
+        viewModelScope.launch { callbackBus.callbacks.collect { onLinkedInCallback(it) } }
     }
 
     companion object {
         /** Thời gian chờ người dùng hoàn tất đăng nhập LinkedIn trong trình duyệt. */
-        const val LINKEDIN_LOGIN_TIMEOUT_MILLIS = 5 * 60 * 1000
+        const val LINKEDIN_LOGIN_TIMEOUT_MILLIS = 5 * 60 * 1000L
     }
 
     private fun loadChannels() {
@@ -127,10 +125,10 @@ class ChannelViewModel @Inject constructor(
         return id.isBlank() || id.contains("SOCIAL_AGENT")
     }
 
-    fun isLinkedInDemoMode(): Boolean {
-        val id = linkedInClientId
-        return id.isBlank() || id.contains("SOCIAL_AGENT")
-    }
+    /** Demo khi chưa cấu hình client id công khai hoặc địa chỉ BFF (còn placeholder). */
+    fun isLinkedInDemoMode(): Boolean =
+        linkedInClientId.isBlank() || linkedInClientId.contains("SOCIAL_AGENT") ||
+            linkedInBffUrl.isBlank() || linkedInBffUrl.contains("SOCIAL_AGENT")
 
     fun connectFacebookDemo() {
         viewModelScope.launch {
@@ -147,60 +145,71 @@ class ChannelViewModel @Inject constructor(
     }
 
     /**
-     * Bắt đầu đăng nhập LinkedIn bằng Native PKCE (RFC 8252 §7.3 + RFC 7636):
-     * mở cổng loopback, phát URL cho Fragment mở bằng trình duyệt hệ thống, chờ redirect, kiểm `state`,
-     * rồi đổi code kèm code_verifier. App chưa được LinkedIn cấp Native PKCE thì báo "blocked".
+     * Bắt đầu đăng nhập LinkedIn qua BFF (RFC 8252 + RFC 7636, docs/research-social-api.md Luồng B):
+     * 1. sinh `state` và cặp `code_verifier`/`code_challenge` (verifier chỉ ở RAM);
+     * 2. đăng ký (state, challenge) với BFF;
+     * 3. phát URL đăng nhập LinkedIn (redirect_uri là BFF) cho Fragment mở bằng trình duyệt hệ thống;
+     * 4. chờ deep link của BFF ([onLinkedInCallback]); quá hạn thì báo timeout.
      */
     fun startLinkedInLogin() {
-        if (!linkedInNativePkceEnabled) {
-            _notices.tryEmit(ChannelNotice.LINKEDIN_PKCE_BLOCKED)
+        if (!LinkedInBffAuth.isValidBaseUrl(linkedInBffUrl)) {
+            _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_FAILED)
             return
         }
         linkedInLoginJob?.cancel()
+        pendingLinkedIn = null
         linkedInLoginJob = viewModelScope.launch {
-            val listener = try {
-                withContext(ioDispatcher) { openRedirectListener() }
-            } catch (_: java.io.IOException) {
+            val verifier = PkceUtil.generateCodeVerifier()
+            val state = PkceUtil.generateState()
+            val registered = repository.startLinkedInSession(state, PkceUtil.generateCodeChallengeS256(verifier))
+            if (registered.isFailure) {
                 _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_FAILED)
                 return@launch
             }
-            // Huỷ coroutine (đăng nhập lại, ViewModel bị huỷ) thì đóng cổng để accept() đang chặn thoát ra.
-            coroutineContext.job.invokeOnCompletion { listener.close() }
-            val verifier = PkceUtil.generateCodeVerifier()
-            val state = PkceUtil.generateState()
-            val redirectUri = listener.redirectUri
-            _browserRequests.emit(
-                LinkedInNativePkce.authorizationUrl(
-                    clientId = linkedInClientId,
-                    redirectUri = redirectUri,
-                    state = state,
-                    codeChallenge = PkceUtil.generateCodeChallengeS256(verifier),
-                ),
-            )
-            val callbackUrl = withContext(ioDispatcher) { listener.awaitRedirect(LINKEDIN_LOGIN_TIMEOUT_MILLIS) }
-            listener.close()
-            when (val result = LinkedInAuthRedirect.parse(callbackUrl, redirectUri, state)) {
-                null -> _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_TIMEOUT)
-                LinkedInAuthRedirect.Result.Cancelled -> _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_CANCELLED)
-                is LinkedInAuthRedirect.Result.Failure -> {
-                    if (result.reason == LinkedInAuthRedirect.FailureReason.STATE_MISMATCH) {
-                        _uiState.value = ChannelUiState.Error(messageRes = R.string.channel_oauth_state_mismatch)
-                    } else {
-                        _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_FAILED)
-                    }
+            pendingLinkedIn = PendingLinkedInLogin(state, verifier)
+            _browserRequests.emit(LinkedInBffAuth.authorizationUrl(linkedInClientId, linkedInBffUrl, state))
+            delay(linkedInLoginTimeoutMillis)
+            if (pendingLinkedIn?.state == state) {
+                pendingLinkedIn = null
+                _notices.tryEmit(ChannelNotice.LINKEDIN_LOGIN_TIMEOUT)
+            }
+        }
+    }
+
+    /**
+     * Xử lý deep link BFF chuyển về. Bỏ qua mọi thứ không đúng dạng hoặc khi không có phiên đang chờ,
+     * nên một intent bên ngoài không thể tự kết nối kênh. Chỉ `state` khớp mới đổi `exchange_code`.
+     */
+    internal fun onLinkedInCallback(url: String) {
+        val pending = pendingLinkedIn ?: return
+        when (val result = LinkedInAuthRedirect.parse(url, LinkedInBffAuth.APP_REDIRECT_URI, pending.state)) {
+            null -> Unit
+            LinkedInAuthRedirect.Result.Cancelled -> finishLinkedInLogin(ChannelNotice.LINKEDIN_LOGIN_CANCELLED)
+            is LinkedInAuthRedirect.Result.Failure -> {
+                if (result.reason == LinkedInAuthRedirect.FailureReason.STATE_MISMATCH) {
+                    // Giữ phiên đang chờ: intent giả mạo không được làm hỏng lần đăng nhập thật.
+                    _uiState.value = ChannelUiState.Error(messageRes = R.string.channel_oauth_state_mismatch)
+                } else {
+                    finishLinkedInLogin(ChannelNotice.LINKEDIN_LOGIN_FAILED)
                 }
-                is LinkedInAuthRedirect.Result.Code -> {
+            }
+            is LinkedInAuthRedirect.Result.Code -> {
+                linkedInLoginJob?.cancel()
+                pendingLinkedIn = null
+                viewModelScope.launch {
                     _uiState.value = ChannelUiState.Loading
-                    val connected = repository.connectLinkedIn(result.authCode, verifier, redirectUri)
-                    if (connected.exceptionOrNull() is LinkedInNativePkceBlockedException) {
-                        _notices.tryEmit(ChannelNotice.LINKEDIN_PKCE_BLOCKED)
-                        _uiState.value = ChannelUiState.Success(channels = knownChannels)
-                    } else {
-                        applyConnectResult(connected)
-                    }
+                    applyConnectResult(
+                        repository.connectLinkedInViaBff(result.exchangeCode, pending.state, pending.codeVerifier),
+                    )
                 }
             }
         }
+    }
+
+    private fun finishLinkedInLogin(notice: ChannelNotice) {
+        linkedInLoginJob?.cancel()
+        pendingLinkedIn = null
+        _notices.tryEmit(notice)
     }
 
     /** Người dùng bấm Hủy trong màn Facebook Login: không thay đổi gì, chỉ báo để Fragment hỏi đổi tài khoản. */
@@ -264,6 +273,7 @@ class ChannelViewModel @Inject constructor(
 
     override fun onCleared() {
         pendingFacebookUser = null
+        pendingLinkedIn = null
         super.onCleared()
     }
 

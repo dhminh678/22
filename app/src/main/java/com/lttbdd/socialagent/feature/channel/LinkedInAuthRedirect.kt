@@ -4,24 +4,26 @@ import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 /**
- * Logic thuần (không phụ thuộc Android) phân tích URL redirect loopback của luồng OAuth LinkedIn (RFC 8252 §7.3).
+ * Logic thuần (không phụ thuộc Android) phân tích URL BFF chuyển hướng về app sau đăng nhập LinkedIn
+ * (deep link [com.lttbdd.socialagent.data.network.LinkedInBffAuth.APP_REDIRECT_URI]).
  *
  * Quy tắc an toàn:
- * - Chỉ coi URL là redirect khi nó **bắt đầu đúng** bằng redirect URI app đã gửi đi (đúng ranh giới),
- *   không nhận `code` từ bất kỳ URL nào khác.
- * - Chỉ nhận `code` khi `state` khớp với giá trị app đã gửi đi (RFC 6749 Section 10.12, chống CSRF).
- * - Lỗi/hủy từ LinkedIn được chấp nhận không cần `state`, nhưng không bao giờ tạo ra `code`.
+ * - Chỉ coi URL là redirect khi nó **bắt đầu đúng** bằng redirect URI của app (đúng ranh giới),
+ *   không nhận `exchange_code` từ bất kỳ URL nào khác.
+ * - Chỉ nhận `exchange_code` khi `state` khớp với giá trị app đã gửi đi (RFC 6749 Section 10.12, chống CSRF).
+ * - Lỗi/hủy từ BFF được chấp nhận không cần `state`, nhưng không bao giờ tạo ra mã.
+ * - `exchange_code` một mình vô dụng: muốn đổi token còn cần `code_verifier` chỉ nằm trong RAM của app.
  */
 object LinkedInAuthRedirect {
 
-    /** LinkedIn trả `user_cancelled_login` hoặc `user_cancelled_authorize` khi người dùng hủy. */
+    /** BFF trả `access_denied` khi người dùng hủy (LinkedIn trả `user_cancelled_*` hoặc `access_denied`). */
     private const val ERROR_USER_CANCELLED_PREFIX = "user_cancelled"
     private const val ERROR_ACCESS_DENIED = "access_denied"
 
     enum class FailureReason { OAUTH_ERROR, STATE_MISMATCH, MISSING_CODE }
 
     sealed interface Result {
-        data class Code(val authCode: String) : Result
+        data class Code(val exchangeCode: String) : Result
         data object Cancelled : Result
         data class Failure(val reason: FailureReason) : Result
     }
@@ -53,7 +55,7 @@ object LinkedInAuthRedirect {
             return Result.Failure(FailureReason.STATE_MISMATCH)
         }
 
-        val code = values["code"]
+        val code = values["exchange_code"]
         return if (code.isNullOrBlank()) Result.Failure(FailureReason.MISSING_CODE) else Result.Code(code)
     }
 

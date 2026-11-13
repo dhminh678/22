@@ -112,13 +112,46 @@ class ChannelRepositoryTest {
     }
 
     @Test
-    fun `isNativePkceBlocked nhan ra loi tu choi cua LinkedIn va bo qua loi thuong`() {
-        assertTrue(ChannelRepositoryImpl.isNativePkceBlocked(401, """{"error":"invalid_client"}"""))
-        assertTrue(ChannelRepositoryImpl.isNativePkceBlocked(400, """{"error":"unauthorized_client"}"""))
-        assertTrue(!ChannelRepositoryImpl.isNativePkceBlocked(400, """{"error":"invalid_request"}"""))
-        assertTrue(!ChannelRepositoryImpl.isNativePkceBlocked(500, """{"error":"invalid_client"}"""))
-        assertTrue(!ChannelRepositoryImpl.isNativePkceBlocked(401, null))
-        assertTrue(!ChannelRepositoryImpl.isNativePkceBlocked(401, "khong phai json"))
+    fun `parseBffToken lay han va scope that tu BFF`() {
+        val token = ChannelRepositoryImpl.parseBffToken(
+            """{"access_token":"AQtoken","token_type":"bearer","expires_in":5184000,"scope":"openid,profile,w_member_social"}""",
+        )!!
+
+        assertEquals("AQtoken", token.accessToken)
+        assertEquals(5_184_000L, token.expiresInSeconds)
+        assertEquals("openid,profile,w_member_social", token.scope)
+    }
+
+    @Test
+    fun `parseBffToken khong bia han va scope khi BFF khong tra`() {
+        val token = ChannelRepositoryImpl.parseBffToken("""{"access_token":"AQtoken","expires_in":null,"scope":null}""")!!
+
+        assertNull(token.expiresInSeconds)
+        assertNull(token.scope)
+    }
+
+    @Test
+    fun `parseBffToken bo qua han khong hop le`() {
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":0}""")!!.expiresInSeconds)
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":-5}""")!!.expiresInSeconds)
+    }
+
+    @Test
+    fun `parseBffToken tu choi phan hoi thieu access_token hoac khong phai JSON`() {
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"error":"invalid_grant"}"""))
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":""}"""))
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":null}"""))
+        assertNull(ChannelRepositoryImpl.parseBffToken("khong phai json"))
+        assertNull(ChannelRepositoryImpl.parseBffToken("[]"))
+    }
+
+    @Test
+    fun `LinkedIn qua BFF tu choi dia chi khong phai HTTPS truoc khi gui bat ky request nao`() = runTest {
+        repository.linkedInBffUrl = "http://bff.example.com"
+
+        assertTrue(repository.startLinkedInSession("s", "c").isFailure)
+        assertTrue(repository.connectLinkedInViaBff("ex", "s", "v").isFailure)
+        assertTrue(fakeTokenStore.storage.isEmpty())
     }
 
     @Test

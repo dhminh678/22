@@ -35,7 +35,6 @@
     <string name="channel_close">Đóng</string>
     <string name="channel_linkedin_cancelled">Đã hủy đăng nhập LinkedIn</string>
     <string name="channel_linkedin_login_failed">Đăng nhập LinkedIn thất bại. Vui lòng thử lại.</string>
-    <string name="channel_linkedin_pkce_blocked">Tạm thời chưa kết nối được LinkedIn: LinkedIn chưa cấp Native PKCE cho ứng dụng này, hoặc Native PKCE không chấp nhận scope OpenID mà app cần để đọc hồ sơ thành viên.</string>
     <string name="channel_linkedin_login_timeout">Đăng nhập LinkedIn đã hết thời gian chờ. Vui lòng thử lại.</string>
     <string name="channel_linkedin_no_browser">Không tìm thấy trình duyệt để đăng nhập LinkedIn.</string>
     <string name="channel_demo_mode_notice">Chưa cấu hình %1$s trong local.properties, đang kết nối ở chế độ demo (không có đăng nhập thật)</string>

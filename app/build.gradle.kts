@@ -30,18 +30,16 @@ val facebookClientToken = System.getenv("FACEBOOK_CLIENT_TOKEN")
     ?: localProperties.getProperty("FACEBOOK_CLIENT_TOKEN")
     ?: "SOCIAL_AGENT_CLIENT_TOKEN"
 
-val linkedinClientId = System.getenv("LINKEDIN_CLIENT_ID")
-    ?: localProperties.getProperty("LINKEDIN_CLIENT_ID")
-    ?: "SOCIAL_AGENT_LINKEDIN_CLIENT_ID"
+// LinkedIn Standard OAuth 2.0 qua BFF (docs/research-social-api.md, Luồng B).
+// Chỉ có định danh CÔNG KHAI: Client ID của App Member và địa chỉ HTTPS của BFF.
+// KHÔNG có client_secret trong app: secret chỉ nằm ở biến môi trường của BFF (backend/linkedin-bff).
+val linkedinMemberClientId = System.getenv("LINKEDIN_MEMBER_CLIENT_ID")
+    ?: localProperties.getProperty("LINKEDIN_MEMBER_CLIENT_ID")
+    ?: "SOCIAL_AGENT_LINKEDIN_MEMBER_CLIENT_ID"
 
-// LinkedIn Native PKCE (RFC 8252 + RFC 7636) chỉ dùng được khi LinkedIn đã bật cho app này.
-// Mặc định false = "blocked": nút LinkedIn báo chưa được cấp thay vì mở trình duyệt.
-// KHÔNG có client_secret trong app: secret nhúng vào APK sẽ bị lộ (quyết định 1 trong docs/research-social-api.md).
-val linkedinNativePkceEnabled = (
-    System.getenv("LINKEDIN_NATIVE_PKCE_ENABLED")
-        ?: localProperties.getProperty("LINKEDIN_NATIVE_PKCE_ENABLED")
-        ?: "false"
-    ).trim().equals("true", ignoreCase = true)
+val linkedinBffUrl = System.getenv("LINKEDIN_BFF_URL")
+    ?: localProperties.getProperty("LINKEDIN_BFF_URL")
+    ?: "SOCIAL_AGENT_LINKEDIN_BFF_URL"
 
 android {
     namespace = "com.lttbdd.socialagent"
@@ -60,8 +58,8 @@ android {
         manifestPlaceholders["facebookClientToken"] = facebookClientToken
         buildConfigField("String", "FACEBOOK_APP_ID", "\"$facebookAppId\"")
         buildConfigField("String", "FACEBOOK_CLIENT_TOKEN", "\"$facebookClientToken\"")
-        buildConfigField("String", "LINKEDIN_CLIENT_ID", "\"$linkedinClientId\"")
-        buildConfigField("boolean", "LINKEDIN_NATIVE_PKCE_ENABLED", "$linkedinNativePkceEnabled")
+        buildConfigField("String", "LINKEDIN_MEMBER_CLIENT_ID", "\"$linkedinMemberClientId\"")
+        buildConfigField("String", "LINKEDIN_BFF_URL", "\"$linkedinBffUrl\"")
 
         resValue("string", "facebook_app_id", facebookAppId)
         resValue("string", "facebook_client_token", facebookClientToken)

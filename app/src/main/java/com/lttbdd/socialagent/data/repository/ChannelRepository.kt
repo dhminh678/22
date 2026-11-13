@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.Flow
  * Repository quản lý việc kết nối kênh mạng xã hội qua OAuth.
  * Nguồn tham chiếu:
  * - RFC 6749 Section 5.1 & 4.2.2: Tính expiresAt từ expires_in thực tế.
- * - RFC 7636: Sử dụng PKCE code_verifier khi đổi token.
+ * - RFC 7636: PKCE giữa app và BFF (code_verifier) khi đổi exchange_code lấy token.
  * - RFC 8252: Xác thực qua External User-Agent.
  */
 interface ChannelRepository {
@@ -31,14 +31,29 @@ interface ChannelRepository {
     ): Result<ChannelAccount>
 
     /**
-     * Kết nối kênh LinkedIn: đổi authorization code bằng Native PKCE (code_verifier, không client_secret).
-     * Thất bại với [LinkedInNativePkceBlockedException] khi LinkedIn chưa cấp Native PKCE cho app.
+     * Chỉ cho chế độ demo (chưa cấu hình LINKEDIN_MEMBER_CLIENT_ID hoặc LINKEDIN_BFF_URL): tạo kênh LinkedIn giả.
+     * Đăng nhập thật dùng [startLinkedInSession] rồi [connectLinkedInViaBff].
      */
     suspend fun connectLinkedIn(
         authCode: String,
         codeVerifier: String,
         redirectUri: String,
     ): Result<ChannelAccount>
+
+    /**
+     * Đăng ký phiên đăng nhập LinkedIn với BFF (`state` + `code_challenge` S256) trước khi mở trình duyệt.
+     */
+    suspend fun startLinkedInSession(state: String, codeChallenge: String): Result<Unit> = Result.success(Unit)
+
+    /**
+     * Kết nối LinkedIn thật: đổi `exchange_code` (BFF chuyển về app qua deep link) kèm `state` và `code_verifier`
+     * lấy token. `client_secret` chỉ nằm ở BFF, không có trong app.
+     */
+    suspend fun connectLinkedInViaBff(
+        exchangeCode: String,
+        state: String,
+        codeVerifier: String,
+    ): Result<ChannelAccount> = Result.failure(UnsupportedOperationException("Chưa hỗ trợ đăng nhập LinkedIn qua BFF"))
 
     /**
      * Ngắt kết nối một kênh và xóa token khỏi Keystore/SecureTokenStore.

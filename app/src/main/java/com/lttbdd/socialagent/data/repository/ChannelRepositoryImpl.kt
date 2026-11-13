@@ -8,7 +8,7 @@ import com.lttbdd.socialagent.core.model.ConnectionStatus
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookUserToken
 import com.lttbdd.socialagent.data.model.OAuthToken
-import com.lttbdd.socialagent.data.network.LinkedInNativePkce
+import com.lttbdd.socialagent.data.network.LinkedInBffAuth
 import com.lttbdd.socialagent.data.security.TokenStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -22,17 +22,18 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
-
-/** LinkedIn từ chối đổi code bằng Native PKCE: app chưa được LinkedIn cấp quyền (trạng thái "blocked"). */
-class LinkedInNativePkceBlockedException : Exception("LinkedIn Native PKCE chưa được cấp cho app này")
 
 /**
  * Implementation quản lý kết nối kênh mạng xã hội, lưu token bảo mật và metadata tài khoản.
  * Nguồn tham chiếu:
  * - RFC 6749 Section 5.1: hạn token tính từ `expires_in` thật của nhà cung cấp (không viết cứng 60 ngày).
- * - RFC 7636: đổi authorization code kèm code_verifier (public client, không client_secret).
+ * - RFC 7636: LinkedIn đi qua BFF; app đổi exchange_code kèm code_verifier (client_secret chỉ nằm ở BFF).
  * - Android Keystore: token mã hóa qua TokenStore; [ChannelAccountStore] chỉ giữ metadata không bí mật.
  */
 @Singleton
@@ -197,8 +198,8 @@ class ChannelRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Kết nối LinkedIn. Code thật được đổi bằng Native PKCE: `code_verifier` thay cho `client_secret`.
-     * LinkedIn từ chối vì app chưa được cấp Native PKCE thì trả [LinkedInNativePkceBlockedException].
+     * Đường kết nối GIẢ cho chế độ demo (chưa cấu hình LINKEDIN_MEMBER_CLIENT_ID / LINKEDIN_BFF_URL).
+     * Luồng thật dùng [startLinkedInSession] rồi [connectLinkedInViaBff].
      */
     override suspend fun connectLinkedIn(
         authCode: String,
@@ -206,80 +207,114 @@ class ChannelRepositoryImpl @Inject constructor(
         redirectUri: String,
     ): Result<ChannelAccount> = withContext(Dispatchers.IO) {
         try {
-            var accessToken = "li_access_token_$authCode"
-            var expiresInSeconds = DEMO_EXPIRES_IN_SECONDS
-            var displayName = "Social Agent LinkedIn Company Page"
-            var accountId = "li_org_202"
-            var grantedScope: String? = LinkedInNativePkce.SCOPE
+            val token = OAuthToken.createFromExpiresIn(
+                accessToken = "li_access_token_$authCode",
+                expiresInSeconds = DEMO_EXPIRES_IN_SECONDS,
+                scope = LinkedInBffAuth.SCOPE,
+            )
+            saveAndRegister(ChannelType.LINKEDIN, "li_org_202", "Social Agent LinkedIn Company Page", token)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 
-            val clientId = BuildConfig.LINKEDIN_CLIENT_ID
+    /** Địa chỉ BFF; tách ra để unit test điều khiển được. */
+    internal var linkedInBffUrl: String = BuildConfig.LINKEDIN_BFF_URL
 
-            if (!authCode.startsWith("demo_code") && !authCode.startsWith("code_li") && clientId.isNotBlank() && !clientId.contains("SOCIAL_AGENT")) {
-                // Code thật: đổi code lấy token. Lỗi thì báo lỗi, KHÔNG lưu tài khoản giả.
-                val formBody = okhttp3.FormBody.Builder()
-                    .add("grant_type", "authorization_code")
-                    .add("code", authCode)
-                    .add("redirect_uri", redirectUri)
-                    .add("client_id", clientId)
-                    .add("code_verifier", codeVerifier)
-                    .build()
-
-                val tokenRequest = okhttp3.Request.Builder()
-                    .url(LinkedInNativePkce.TOKEN_ENDPOINT)
-                    .post(formBody)
-                    .build()
-
-                val tokenJson = httpClient.newCall(tokenRequest).execute().use { response ->
-                    val body = response.body?.string()
-                    if (!response.isSuccessful || body.isNullOrEmpty()) {
-                        val blocked = isNativePkceBlocked(response.code, body)
-                        return@withContext Result.failure(
-                            if (blocked) {
-                                LinkedInNativePkceBlockedException()
-                            } else {
-                                IllegalStateException("LinkedIn token exchange failed (HTTP ${response.code})")
-                            },
-                        )
+    /**
+     * Đăng ký phiên với BFF (`POST /auth/linkedin/start`) trước khi mở trình duyệt: BFF nhớ `state`
+     * và `code_challenge` để kiểm khi LinkedIn chuyển về và khi app đổi token. Không gửi bí mật nào.
+     */
+    override suspend fun startLinkedInSession(state: String, codeChallenge: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                if (!LinkedInBffAuth.isValidBaseUrl(linkedInBffUrl)) {
+                    return@withContext Result.failure(IllegalStateException("LINKEDIN_BFF_URL chưa hợp lệ (cần HTTPS)"))
+                }
+                val body = buildJsonObject {
+                    put("state", state)
+                    put("code_challenge", codeChallenge)
+                }
+                postJson<Unit>(LinkedInBffAuth.startUrl(linkedInBffUrl), body.toString()) { response, _ ->
+                    if (response.isSuccessful) {
+                        Result.success(Unit)
+                    } else {
+                        Result.failure(IllegalStateException("Không bắt đầu được phiên đăng nhập LinkedIn (HTTP ${response.code})"))
                     }
-                    json.parseToJsonElement(body) as? JsonObject
                 }
-                val tokenStr = tokenJson?.stringField("access_token")
-                if (tokenStr.isNullOrEmpty()) {
-                    return@withContext Result.failure(IllegalStateException("LinkedIn không trả về access_token"))
-                }
-                accessToken = tokenStr
-                // Scope và hạn thật do LinkedIn trả về; thiếu thì không bịa: scope null, hạn lấy mặc định ngắn.
-                grantedScope = tokenJson?.stringField("scope")?.takeIf { it.isNotBlank() }
-                expiresInSeconds = tokenJson?.stringField("expires_in")?.toLongOrNull()?.takeIf { it > 0 }
-                    ?: FALLBACK_EXPIRES_IN_SECONDS
-
-                // Gọi UserInfo API (OpenID Connect) để lấy tên thật của người dùng
-                val userRequest = okhttp3.Request.Builder()
-                    .url("https://api.linkedin.com/v2/userinfo")
-                    .header("Authorization", "Bearer $accessToken")
-                    .build()
-                val userObj = httpClient.newCall(userRequest).execute().use { response ->
-                    val body = response.body?.string()
-                    if (!response.isSuccessful || body.isNullOrEmpty()) {
-                        return@withContext Result.failure(
-                            IllegalStateException("Không lấy được thông tin tài khoản LinkedIn (HTTP ${response.code})"),
-                        )
-                    }
-                    json.parseToJsonElement(body) as? JsonObject
-                }
-                userObj?.stringField("name")?.takeIf { it.isNotEmpty() }?.let { displayName = it }
-                userObj?.stringField("sub")?.takeIf { it.isNotEmpty() }?.let { accountId = it }
+            } catch (e: Exception) {
+                Result.failure(e)
             }
+        }
+
+    /**
+     * Đổi `exchange_code` (từ deep link) kèm `state` và `code_verifier` lấy token LinkedIn từ BFF
+     * (`POST /auth/linkedin/token`), rồi gọi `/v2/userinfo` lấy tên và mã thành viên.
+     * Hạn và scope là giá trị thật LinkedIn trả (BFF chuyển tiếp nguyên vẹn); thiếu thì không bịa.
+     */
+    override suspend fun connectLinkedInViaBff(
+        exchangeCode: String,
+        state: String,
+        codeVerifier: String,
+    ): Result<ChannelAccount> = withContext(Dispatchers.IO) {
+        try {
+            if (!LinkedInBffAuth.isValidBaseUrl(linkedInBffUrl)) {
+                return@withContext Result.failure(IllegalStateException("LINKEDIN_BFF_URL chưa hợp lệ (cần HTTPS)"))
+            }
+            val requestBody = buildJsonObject {
+                put("exchange_code", exchangeCode)
+                put("state", state)
+                put("code_verifier", codeVerifier)
+            }
+            val tokenResult = postJson<BffToken>(LinkedInBffAuth.tokenUrl(linkedInBffUrl), requestBody.toString()) { response, body ->
+                if (!response.isSuccessful || body.isNullOrEmpty()) {
+                    Result.failure(IllegalStateException("Không đổi được token LinkedIn qua BFF (HTTP ${response.code})"))
+                } else {
+                    parseBffToken(body)?.let { Result.success(it) }
+                        ?: Result.failure(IllegalStateException("BFF không trả về access_token"))
+                }
+            }
+            val bffToken = tokenResult.getOrElse { return@withContext Result.failure(it) }
+
+            val userRequest = okhttp3.Request.Builder()
+                .url("https://api.linkedin.com/v2/userinfo")
+                .header("Authorization", "Bearer ${bffToken.accessToken}")
+                .build()
+            val userObj = httpClient.newCall(userRequest).execute().use { response ->
+                val body = response.body?.string()
+                if (!response.isSuccessful || body.isNullOrEmpty()) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Không lấy được thông tin tài khoản LinkedIn (HTTP ${response.code})"),
+                    )
+                }
+                json.parseToJsonElement(body) as? JsonObject
+            }
+            val accountId = userObj?.stringField("sub")?.takeIf { it.isNotEmpty() }
+                ?: return@withContext Result.failure(IllegalStateException("LinkedIn không trả về mã thành viên"))
+            val displayName = userObj?.stringField("name")?.takeIf { it.isNotEmpty() } ?: accountId
 
             val token = OAuthToken.createFromExpiresIn(
-                accessToken = accessToken,
-                expiresInSeconds = expiresInSeconds,
-                scope = grantedScope,
+                accessToken = bffToken.accessToken,
+                expiresInSeconds = bffToken.expiresInSeconds ?: FALLBACK_EXPIRES_IN_SECONDS,
+                scope = bffToken.scope,
             )
             saveAndRegister(ChannelType.LINKEDIN, accountId, displayName, token)
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** POST JSON tới BFF; [handle] chạy khi response còn mở. Token trong body không bao giờ được log. */
+    private fun <T> postJson(
+        url: String,
+        jsonBody: String,
+        handle: (okhttp3.Response, String?) -> Result<T>,
+    ): Result<T> {
+        val request = okhttp3.Request.Builder()
+            .url(url)
+            .post(jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        return httpClient.newCall(request).execute().use { response -> handle(response, response.body?.string()) }
     }
 
     override suspend fun disconnectChannel(type: ChannelType, accountId: String): Result<Unit> {
@@ -320,8 +355,6 @@ class ChannelRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun JsonObject.stringField(key: String): String? = (this[key] as? JsonPrimitive)?.content
-
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
 
@@ -339,18 +372,22 @@ class ChannelRepositoryImpl @Inject constructor(
         /** LinkedIn không trả expires_in: dùng hạn ngắn để buộc đăng nhập lại thay vì giả định 60 ngày. */
         private const val FALLBACK_EXPIRES_IN_SECONDS = 3_600L
 
-        /**
-         * LinkedIn báo app không được dùng Native PKCE: HTTP 4xx kèm lỗi client/không được phép
-         * (`invalid_client`, `unauthorized_client`, `access_denied`). Các lỗi khác (code hết hạn…) là lỗi thường.
-         */
-        internal fun isNativePkceBlocked(httpCode: Int, body: String?): Boolean {
-            if (httpCode !in 400..403 || body.isNullOrEmpty()) return false
-            val error = try {
-                ((json.parseToJsonElement(body) as? JsonObject)?.get("error") as? JsonPrimitive)?.content
+        /** Token LinkedIn do BFF chuyển tiếp: hạn và scope là giá trị thật, thiếu thì null (không bịa). */
+        internal data class BffToken(val accessToken: String, val expiresInSeconds: Long?, val scope: String?)
+
+        /** Phân tích phản hồi `POST /auth/linkedin/token`; trả null nếu không có `access_token`. */
+        internal fun parseBffToken(body: String): BffToken? {
+            return try {
+                val obj = json.parseToJsonElement(body) as? JsonObject ?: return null
+                val accessToken = obj.stringField("access_token")?.takeIf { it.isNotEmpty() } ?: return null
+                BffToken(
+                    accessToken = accessToken,
+                    expiresInSeconds = obj.stringField("expires_in")?.toLongOrNull()?.takeIf { it > 0 },
+                    scope = obj.stringField("scope")?.takeIf { it.isNotBlank() },
+                )
             } catch (_: Exception) {
                 null
             }
-            return error == "invalid_client" || error == "unauthorized_client" || error == "access_denied"
         }
 
         /**
@@ -368,3 +405,7 @@ class ChannelRepositoryImpl @Inject constructor(
         }
     }
 }
+
+/** Giá trị chuỗi của trường JSON; trường thiếu hoặc `null` trả null. */
+private fun JsonObject.stringField(key: String): String? =
+    (this[key] as? JsonPrimitive)?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content
