@@ -13,7 +13,7 @@ import java.util.Base64
  */
 object PkceUtil {
 
-    private const val UNRESERVED_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    private const val UNRESERVED_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._"
     private const val DEFAULT_VERIFIER_LENGTH = 64
 
     /**
