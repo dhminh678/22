@@ -15,12 +15,8 @@
 
     <fragment
         android:id="@+id/composeFragment"
-        android:name="com.lttbdd.socialagent.core.ui.PlaceholderFragment"
+        android:name="com.lttbdd.socialagent.feature.compose.ComposeFragment"
         android:label="@string/nav_compose">
-        <argument
-            android:name="titleRes"
-            android:defaultValue="@string/nav_compose"
-            app:argType="reference" />
     </fragment>
 
     <fragment

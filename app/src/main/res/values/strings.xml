@@ -172,4 +172,32 @@
     <!-- Mục API key trong màn Cài đặt. -->
     <string name="api_keys_settings_description">Add, check, replace or delete your own OpenAI and Gemini keys. Keys are encrypted and stored only on this device.</string>
     <string name="api_keys_settings_manage">Manage API keys</string>
+
+    <!-- Feature F3: Topic Input -->
+    <string name="compose_header_title">Create New Post</string>
+    <string name="compose_header_subtitle">Provide a brief to guide the AI agent</string>
+    <string name="compose_topic_hint">Topic *</string>
+    <string name="compose_topic_error">Topic cannot be empty</string>
+    <string name="compose_goal_hint">Goal *</string>
+    <string name="compose_goal_error">Goal cannot be empty</string>
+    <string name="compose_audience_hint">Target Audience *</string>
+    <string name="compose_audience_error">Target audience cannot be empty</string>
+    <string name="compose_tone_hint">Tone of Voice *</string>
+    <string name="compose_tone_error">Please select a tone</string>
+    <string name="compose_language_title">Content Language *</string>
+    <string name="compose_language_vi">Vietnamese (VI)</string>
+    <string name="compose_language_en">English (EN)</string>
+    <string name="compose_channels_title">Target Channels *</string>
+    <string name="compose_channels_error">Select at least one target channel</string>
+    <string name="compose_channel_facebook">Facebook Page</string>
+    <string name="compose_channel_linkedin">LinkedIn</string>
+    <string name="action_continue">Continue</string>
+    <string name="compose_submit_success">Brief created successfully</string>
+
+    <!-- Tone options -->
+    <string name="tone_professional">Professional</string>
+    <string name="tone_friendly">Friendly</string>
+    <string name="tone_casual">Casual</string>
+    <string name="tone_inspirational">Inspirational</string>
+    <string name="tone_persuasive">Persuasive</string>
 </resources>

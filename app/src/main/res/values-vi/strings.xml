@@ -170,4 +170,32 @@
     <!-- Mục API key trong màn Cài đặt. -->
     <string name="api_keys_settings_description">Thêm, kiểm tra, thay thế hoặc xóa key OpenAI và Gemini của bạn. Key được mã hóa và chỉ lưu trên thiết bị này.</string>
     <string name="api_keys_settings_manage">Quản lý API key</string>
+
+    <!-- Feature F3: Topic Input -->
+    <string name="compose_header_title">Tạo bài viết mới</string>
+    <string name="compose_header_subtitle">Cung cấp thông tin brief để AI agent bắt đầu</string>
+    <string name="compose_topic_hint">Chủ đề bài viết *</string>
+    <string name="compose_topic_error">Chủ đề không được để trống</string>
+    <string name="compose_goal_hint">Mục tiêu bài viết *</string>
+    <string name="compose_goal_error">Mục tiêu không được để trống</string>
+    <string name="compose_audience_hint">Đối tượng độc giả *</string>
+    <string name="compose_audience_error">Đối tượng độc giả không được để trống</string>
+    <string name="compose_tone_hint">Giọng văn *</string>
+    <string name="compose_tone_error">Vui lòng chọn giọng văn</string>
+    <string name="compose_language_title">Ngôn ngữ bài viết *</string>
+    <string name="compose_language_vi">Tiếng Việt (VI)</string>
+    <string name="compose_language_en">Tiếng Anh (EN)</string>
+    <string name="compose_channels_title">Kênh đăng *</string>
+    <string name="compose_channels_error">Chọn ít nhất một kênh đăng</string>
+    <string name="compose_channel_facebook">Trang Facebook</string>
+    <string name="compose_channel_linkedin">LinkedIn</string>
+    <string name="action_continue">Tiếp tục</string>
+    <string name="compose_submit_success">Tạo brief thành công</string>
+
+    <!-- Tone options -->
+    <string name="tone_professional">Chuyên nghiệp</string>
+    <string name="tone_friendly">Thân thiện</string>
+    <string name="tone_casual">Gần gũi</string>
+    <string name="tone_inspirational">Truyền cảm hứng</string>
+    <string name="tone_persuasive">Thuyết phục</string>
 </resources>
