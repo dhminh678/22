@@ -56,4 +56,7 @@ abstract class CommentDao {
 
     @Query("UPDATE comments SET authorName = :authorName, text = :text WHERE channel = :channel AND id = :id")
     protected abstract suspend fun updateContent(channel: ChannelType, id: String, authorName: String, text: String)
+
+    @Query("DELETE FROM comments WHERE channel = :channel")
+    abstract suspend fun deleteByChannel(channel: ChannelType)
 }

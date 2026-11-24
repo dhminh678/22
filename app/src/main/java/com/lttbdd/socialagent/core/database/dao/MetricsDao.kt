@@ -39,4 +39,7 @@ interface MetricsDao {
      */
     @Query("DELETE FROM metrics_snapshots WHERE capturedAtMillis < :beforeMillis")
     suspend fun deleteOlderThan(beforeMillis: Long): Int
+
+    @Query("DELETE FROM metrics_snapshots WHERE channel = :channel")
+    suspend fun deleteByChannel(channel: ChannelType)
 }

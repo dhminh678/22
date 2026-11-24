@@ -1,5 +1,6 @@
 package com.lttbdd.socialagent.feature.channel
 
+import androidx.lifecycle.SavedStateHandle
 import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.core.model.ChannelCapability
 import com.lttbdd.socialagent.core.model.ChannelType
@@ -11,11 +12,16 @@ import com.lttbdd.socialagent.data.model.FacebookUserToken
 import com.lttbdd.socialagent.data.network.LinkedInBffAuth
 import com.lttbdd.socialagent.data.network.PkceUtil
 import com.lttbdd.socialagent.data.repository.ChannelRepository
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -25,8 +31,10 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -40,13 +48,15 @@ class ChannelViewModelTest {
     private lateinit var fakeRepository: FakeChannelRepository
     private lateinit var viewModel: ChannelViewModel
     private lateinit var callbackBus: LinkedInCallbackBus
+    private lateinit var savedStateHandle: SavedStateHandle
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         fakeRepository = FakeChannelRepository()
         callbackBus = LinkedInCallbackBus()
-        viewModel = ChannelViewModel(fakeRepository, callbackBus)
+        savedStateHandle = SavedStateHandle()
+        viewModel = ChannelViewModel(fakeRepository, callbackBus, savedStateHandle)
         viewModel.linkedInClientId = "client_that"
         viewModel.linkedInBffUrl = "https://bff.example.com"
         viewModel.linkedInLoginTimeoutMillis = 1_000L
@@ -65,7 +75,7 @@ class ChannelViewModelTest {
         fakeRepository.pages = listOf(FacebookPage("p1", "Page Mot", "t1"))
         fakeRepository.scope = "pages_show_list"
 
-        viewModel.onFacebookLoggedIn(user())
+        completeFacebookLogin()
         testDispatcher.scheduler.advanceUntilIdle()
 
         val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.first()
@@ -73,8 +83,13 @@ class ChannelViewModelTest {
     }
 
     private fun connectWithFacebookToken() {
-        viewModel.onFacebookLoggedIn(user())
+        completeFacebookLogin()
         testDispatcher.scheduler.advanceUntilIdle()
+    }
+
+    private fun completeFacebookLogin(token: FacebookUserToken = user()) {
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.dispatchFacebookSdkResult { viewModel.onFacebookLoggedIn(token) }
     }
 
     @Test
@@ -86,13 +101,46 @@ class ChannelViewModelTest {
         assertEquals(2, viewModel.pagePicker.value?.pages?.size)
         assertTrue((viewModel.uiState.value as ChannelUiState.Success).channels.isEmpty())
 
-        viewModel.selectFacebookPage(fakeRepository.pages[1])
+        viewModel.selectFacebookPage(checkNotNull(viewModel.pagePicker.value), 1)
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertNull(viewModel.pagePicker.value)
         val channels = (viewModel.uiState.value as ChannelUiState.Success).channels
         assertEquals(listOf("Page Hai"), channels.map { it.displayName })
         assertEquals("p2", channels.first().accountId)
+    }
+
+    @Test
+    fun staleFacebookPagePickerCannotConnectAfterDisconnectAndLogin() = runTest {
+        val connectedPage = FacebookPage("connected", "Connected Page", "first-token")
+        fakeRepository.pages = listOf(connectedPage)
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        fakeRepository.pages = listOf(connectedPage, FacebookPage("old", "Old Page", "old-token"))
+        connectWithFacebookToken()
+        val oldPicker = checkNotNull(viewModel.pagePicker.value)
+
+        viewModel.disconnectChannel(facebook)
+        testScheduler.runCurrent()
+        assertNull(viewModel.pagePicker.value)
+
+        val newPage = FacebookPage("new", "New Page", "new-token")
+        fakeRepository.pages = listOf(newPage, FacebookPage("other", "Other Page", "other-token"))
+        val newUser = user(expiresAt = 10_000_000L, scope = "pages_read_engagement")
+        completeFacebookLogin(newUser)
+        testScheduler.runCurrent()
+        val newPicker = checkNotNull(viewModel.pagePicker.value)
+
+        viewModel.selectFacebookPage(oldPicker, 1)
+        viewModel.cancelFacebookPagePicker(oldPicker)
+        testScheduler.runCurrent()
+        assertTrue(fakeRepository.getConnectedChannels().first().isEmpty())
+        assertEquals(newPicker, viewModel.pagePicker.value)
+
+        viewModel.selectFacebookPage(newPicker, 0)
+        testScheduler.runCurrent()
+        assertEquals(newUser, fakeRepository.lastUser)
+        assertEquals(newPage.id, fakeRepository.getConnectedChannels().first().single().accountId)
     }
 
     @Test
@@ -139,10 +187,10 @@ class ChannelViewModelTest {
     fun `huy hop thoai chon Page thi khong ket noi va xoa token tam`() = runTest {
         fakeRepository.pages = listOf(FacebookPage("p1", "A", "t1"), FacebookPage("p2", "B", "t2"))
         connectWithFacebookToken()
-        assertNotNull(viewModel.pagePicker.value)
+        val picker = checkNotNull(viewModel.pagePicker.value)
 
-        viewModel.cancelFacebookPagePicker()
-        viewModel.selectFacebookPage(fakeRepository.pages[0])
+        viewModel.cancelFacebookPagePicker(picker)
+        viewModel.selectFacebookPage(picker, 0)
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertNull(viewModel.pagePicker.value)
@@ -237,7 +285,7 @@ class ChannelViewModelTest {
     fun `Page duoc ket noi bang han va quyen that cua phien SDK`() = runTest {
         fakeRepository.pages = listOf(FacebookPage("p1", "Page Mot", "t1"))
 
-        viewModel.onFacebookLoggedIn(user(expiresAt = 123_456L, scope = "pages_show_list,pages_manage_posts"))
+        completeFacebookLogin(user(expiresAt = 123_456L, scope = "pages_show_list,pages_manage_posts"))
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(123_456L, fakeRepository.lastUser?.expiresAtMillis)
@@ -249,7 +297,8 @@ class ChannelViewModelTest {
         val notices = mutableListOf<ChannelNotice>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.notices.collect { notices.add(it) } }
 
-        viewModel.onFacebookLoginCancelled()
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.dispatchFacebookSdkResult(viewModel::onFacebookLoginCancelled)
 
         assertEquals(listOf(ChannelNotice.FACEBOOK_LOGIN_CANCELLED), notices)
     }
@@ -470,7 +519,8 @@ class ChannelViewModelTest {
 
     @Test
     fun `su kien khong bi mat khi chua co ai lang nghe, giao dung mot lan khi Fragment quay lai`() = runTest {
-        viewModel.onFacebookLoginFailed() // Fragment đang dừng: chưa có collector nào
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.dispatchFacebookSdkResult { } // SDK không gọi callback và chưa có collector nào.
 
         val first = mutableListOf<ChannelNotice>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.notices.collect { first.add(it) } }
@@ -572,16 +622,580 @@ class ChannelViewModelTest {
     fun `doc kho loi thi hien loi va co the thu lai`() = runTest {
         fakeRepository.connectFacebookSelectedPage(user(), FacebookPage("p1", "Page Mot", "t1"))
         fakeRepository.loadError = true
-        val errorVm = ChannelViewModel(fakeRepository, callbackBus)
+        val errorVm = ChannelViewModel(fakeRepository, callbackBus, SavedStateHandle())
 
         testDispatcher.scheduler.advanceUntilIdle()
         assertEquals(ChannelUiState.LoadFailed, errorVm.uiState.value)
 
         fakeRepository.loadError = false
         errorVm.retryLoadChannels()
-        assertEquals(ChannelUiState.Loading, errorVm.uiState.value)
+        assertEquals(ChannelUiState.Loading(), errorVm.uiState.value)
         testDispatcher.scheduler.advanceUntilIdle()
         assertEquals(listOf("p1"), (errorVm.uiState.value as ChannelUiState.Success).channels.map { it.accountId })
+    }
+
+    @Test
+    fun disconnectDropsQueuedLinkedInBrowserRequest() = runTest {
+        val account = fakeRepository.connectLinkedInViaBff("initial-code", "initial-state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        viewModel.startLinkedInLogin()
+        testScheduler.runCurrent()
+        assertEquals(1, fakeRepository.sessions.size)
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+
+        val urls = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.browserRequests.collect { urls.add(it) }
+        }
+        assertTrue(urls.isEmpty())
+
+        viewModel.startLinkedInLogin()
+        testScheduler.runCurrent()
+        assertEquals(2, fakeRepository.sessions.size)
+        assertEquals(fakeRepository.sessions.last().first, stateOf(urls.single()))
+    }
+
+    @Test
+    fun confirmingDisconnectWhileLinkedInExchangeIsLoadingCancelsTheExchange() = runTest {
+        val linkedin = fakeRepository.connectLinkedInViaBff("initial-code", "initial-state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val (urls, _) = startLinkedIn()
+        assertEquals(ChannelUiState.Success(listOf(linkedin)), viewModel.uiState.value)
+        val tokenReady = CompletableDeferred<Unit>()
+        fakeRepository.beforeLinkedInToken = {
+            // Mô phỏng yêu cầu mạng đồng bộ vẫn đang chờ phản hồi sau khi coroutine bị hủy.
+            withContext(NonCancellable) { tokenReady.await() }
+            currentCoroutineContext().ensureActive()
+        }
+
+        try {
+            callback("exchange_code=reconnect&state=${stateOf(urls.single())}")
+            assertEquals("reconnect", fakeRepository.lastBff?.first)
+            assertEquals(ChannelUiState.Loading(listOf(linkedin)), viewModel.uiState.value)
+
+            viewModel.disconnectChannel(linkedin)
+            viewModel.disconnectChannel(linkedin)
+            testScheduler.runCurrent()
+            assertEquals(listOf(ChannelType.LINKEDIN to linkedin.accountId), fakeRepository.disconnects)
+            assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+        } finally {
+            tokenReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+        assertTrue(fakeRepository.getConnectedChannels().first().isEmpty())
+    }
+
+    @Test
+    fun channelListUpdateKeepsLinkedInExchangeLoadingAndAllowsDisconnect() = runTest {
+        val linkedin = fakeRepository.connectLinkedInViaBff("initial-code", "initial-state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val (urls, _) = startLinkedIn()
+        val tokenReady = CompletableDeferred<Unit>()
+        fakeRepository.beforeLinkedInToken = { tokenReady.await() }
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+
+        try {
+            callback("exchange_code=reconnect&state=${stateOf(urls.single())}")
+            val facebook = fakeRepository.connectFacebookSelectedPage(user(), fakeRepository.pages.single()).getOrThrow()
+            testScheduler.runCurrent()
+
+            assertEquals(ChannelUiState.Loading(listOf(linkedin, facebook)), viewModel.uiState.value)
+            assertTrue(viewModel.canDisconnectChannel(linkedin))
+            viewModel.disconnectChannel(linkedin)
+            testScheduler.runCurrent()
+            assertEquals(ChannelUiState.Success(listOf(facebook)), viewModel.uiState.value)
+        } finally {
+            tokenReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+        assertEquals(listOf(ChannelType.LINKEDIN to linkedin.accountId), fakeRepository.disconnects)
+        assertEquals(listOf(ChannelType.FACEBOOK), fakeRepository.getConnectedChannels().first().map { it.type })
+    }
+
+    @Test
+    fun disconnectingFacebookKeepsUnrelatedLinkedInExchangeLoading() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val (urls, _) = startLinkedIn()
+        val tokenReady = CompletableDeferred<Unit>()
+        fakeRepository.beforeLinkedInToken = { tokenReady.await() }
+
+        try {
+            callback("exchange_code=connect&state=${stateOf(urls.single())}")
+            viewModel.disconnectChannel(facebook)
+            testScheduler.runCurrent()
+
+            assertEquals(listOf(ChannelType.FACEBOOK to facebook.accountId), fakeRepository.disconnects)
+            assertEquals(ChannelUiState.Loading(), viewModel.uiState.value)
+        } finally {
+            tokenReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+        val channels = (viewModel.uiState.value as ChannelUiState.Success).channels
+        assertEquals(listOf(ChannelType.LINKEDIN), channels.map { it.type })
+    }
+
+    @Test
+    fun linkedInLoginCannotStartWhileDisconnectIsInProgress() = runTest {
+        val linkedin = fakeRepository.connectLinkedInViaBff("initial-code", "initial-state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val disconnectReady = CompletableDeferred<Unit>()
+        fakeRepository.disconnectReady = disconnectReady
+
+        try {
+            viewModel.disconnectChannel(linkedin)
+            testScheduler.runCurrent()
+            assertEquals(ChannelUiState.Loading(listOf(linkedin)), viewModel.uiState.value)
+
+            viewModel.startLinkedInLogin()
+            testScheduler.runCurrent()
+            assertTrue(fakeRepository.sessions.isEmpty())
+        } finally {
+            disconnectReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+
+        val (urls, _) = startLinkedIn()
+        assertEquals(1, fakeRepository.sessions.size)
+        assertEquals(fakeRepository.sessions.single().first, stateOf(urls.single()))
+    }
+
+    @Test
+    fun disconnectCancelsLinkedInTokenExchangeAlreadyInProgress() = runTest {
+        val linkedIn = fakeRepository.connectLinkedInViaBff("initial-code", "initial-state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val (urls, _) = startLinkedIn()
+        val facebookPagesReady = CompletableDeferred<Unit>()
+        val linkedInTokenReady = CompletableDeferred<Unit>()
+        fakeRepository.pages = listOf(FacebookPage("page", "Facebook Page", "page-token"))
+        fakeRepository.facebookPagesReady = facebookPagesReady
+        fakeRepository.beforeLinkedInToken = { linkedInTokenReady.await() }
+
+        completeFacebookLogin()
+        testScheduler.runCurrent()
+        callback("exchange_code=reconnect&state=${stateOf(urls.single())}")
+        assertEquals("reconnect", fakeRepository.lastBff?.first)
+
+        // Facebook hoàn tất trước, danh sách vẫn dùng được trong lúc LinkedIn đang đổi mã.
+        facebookPagesReady.complete(Unit)
+        testScheduler.runCurrent()
+        val loading = viewModel.uiState.value as ChannelUiState.Loading
+        assertTrue(linkedIn in loading.channels)
+        assertTrue(viewModel.canDisconnectChannel(linkedIn))
+        viewModel.disconnectChannel(linkedIn)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.LINKEDIN to linkedIn.accountId), fakeRepository.disconnects)
+
+        linkedInTokenReady.complete(Unit)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.FACEBOOK), fakeRepository.getConnectedChannels().first().map { it.type })
+        assertEquals(
+            listOf(ChannelType.FACEBOOK),
+            (viewModel.uiState.value as ChannelUiState.Success).channels.map { it.type },
+        )
+    }
+
+    @Test
+    fun disconnectCancelsFacebookLoginWhileLoadingPagesAndAllowsNewLogin() = runTest {
+        val page = FacebookPage("a", "Page A", "page-token")
+        fakeRepository.pages = listOf(page)
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val (urls, _) = startLinkedIn()
+        val pagesReady = CompletableDeferred<Unit>()
+        fakeRepository.facebookPagesReady = pagesReady
+
+        completeFacebookLogin()
+        testScheduler.runCurrent()
+        callback("exchange_code=connect&state=${stateOf(urls.single())}")
+        viewModel.disconnectChannel(facebook)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.FACEBOOK to page.id), fakeRepository.disconnects)
+
+        pagesReady.complete(Unit)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.LINKEDIN), fakeRepository.getConnectedChannels().first().map { it.type })
+
+        completeFacebookLogin()
+        testScheduler.runCurrent()
+        assertEquals(
+            setOf(ChannelType.FACEBOOK, ChannelType.LINKEDIN),
+            (viewModel.uiState.value as ChannelUiState.Success).channels.map { it.type }.toSet(),
+        )
+    }
+
+    @Test
+    fun disconnectCancelsFacebookLoginWhileSavingSelectedPage() = runTest {
+        val page = FacebookPage("a", "Page A", "page-token")
+        fakeRepository.pages = listOf(page)
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val (urls, _) = startLinkedIn()
+        fakeRepository.pages = listOf(page, FacebookPage("b", "Page B", "other-token"))
+        completeFacebookLogin()
+        testScheduler.runCurrent()
+        val picker = checkNotNull(viewModel.pagePicker.value)
+        val pageSaveReady = CompletableDeferred<Unit>()
+        fakeRepository.facebookPageSaveReady = pageSaveReady
+
+        viewModel.selectFacebookPage(picker, 0)
+        testScheduler.runCurrent()
+        callback("exchange_code=connect&state=${stateOf(urls.single())}")
+        viewModel.disconnectChannel(facebook)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.FACEBOOK to page.id), fakeRepository.disconnects)
+
+        pageSaveReady.complete(Unit)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.LINKEDIN), fakeRepository.getConnectedChannels().first().map { it.type })
+        assertNull(viewModel.pagePicker.value)
+    }
+
+    @Test
+    fun facebookSdkResultDuringDisconnectDoesNotReconnectAccount() = runTest {
+        val page = FacebookPage("a", "Page A", "page-token")
+        fakeRepository.pages = listOf(page)
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val disconnectReady = CompletableDeferred<Unit>()
+        val pagesReady = CompletableDeferred<Unit>()
+        fakeRepository.disconnectReady = disconnectReady
+        fakeRepository.facebookPagesReady = pagesReady
+
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.disconnectChannel(facebook)
+        testScheduler.runCurrent()
+        assertEquals(listOf(ChannelType.FACEBOOK to page.id), fakeRepository.disconnects)
+        assertEquals(ChannelUiState.Loading(listOf(facebook)), viewModel.uiState.value)
+
+        viewModel.dispatchFacebookSdkResult { viewModel.onFacebookLoggedIn(user()) }
+        testScheduler.runCurrent()
+        disconnectReady.complete(Unit)
+        testScheduler.runCurrent()
+        pagesReady.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(emptyList<ChannelAccount>(), fakeRepository.getConnectedChannels().first())
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+
+        completeFacebookLogin()
+        testScheduler.runCurrent()
+        assertEquals(page.id, fakeRepository.getConnectedChannels().first().single().accountId)
+    }
+
+    @Test
+    fun facebookSdkResultAfterDisconnectDoesNotReconnectAccount() = runTest {
+        val page = FacebookPage("a", "Page A", "page-token")
+        fakeRepository.pages = listOf(page)
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.disconnectChannel(facebook)
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+
+        val restoredState = SavedStateHandle(savedStateHandle.keys().associateWith { savedStateHandle.get<Any>(it) })
+        viewModel = ChannelViewModel(fakeRepository, callbackBus, restoredState)
+        assertFalse(viewModel.beginFacebookSdkLogin())
+        var delivered = false
+        viewModel.dispatchFacebookSdkResult {
+            delivered = true
+            viewModel.onFacebookLoggedIn(user())
+        }
+        testScheduler.runCurrent()
+        assertFalse(delivered)
+        assertEquals(emptyList<ChannelAccount>(), fakeRepository.getConnectedChannels().first())
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+
+        connectWithFacebookToken()
+        assertEquals(page.id, fakeRepository.getConnectedChannels().first().single().accountId)
+    }
+
+    @Test
+    fun disconnectRemovesOnlyTheSelectedAccountAndClearsItsCachedScope() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        viewModel.demoEnabled = true
+        viewModel.connectLinkedInDemo("[DEMO] LinkedIn")
+        val channels = (viewModel.uiState.value as ChannelUiState.Success).channels
+        val account = channels.first()
+        assertNotNull(viewModel.getScopeForAccount(account))
+        assertTrue(viewModel.disconnectDeletesSharedData(account))
+
+        viewModel.disconnectChannel(account)
+        viewModel.disconnectChannel(account)
+        assertEquals(ChannelUiState.Loading(channels), viewModel.uiState.value)
+        testScheduler.runCurrent()
+
+        val state = viewModel.uiState.value as ChannelUiState.Success
+        assertEquals(listOf(ChannelType.FACEBOOK to "a"), fakeRepository.disconnects)
+        assertEquals(ChannelType.LINKEDIN, state.channels.single().type)
+        assertNull(viewModel.getScopeForAccount(account))
+        assertEquals(ChannelNotice.CHANNEL_DISCONNECTED, viewModel.notices.first())
+    }
+
+    @Test
+    fun disconnectFailureKeepsTheChannelVisibleAndReportsFailure() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        fakeRepository.disconnectResult = Result.failure(java.io.IOException("Kho lỗi"))
+        val account = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+
+        assertEquals(account, (viewModel.uiState.value as ChannelUiState.Success).channels.single())
+        assertEquals(com.lttbdd.socialagent.R.string.channel_disconnect_failed, viewModel.errors.first())
+    }
+
+    @Test
+    fun obsoleteChannelListCannotRestoreAccountWhileNewListIsLoading() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val obsoleteScopeReady = CompletableDeferred<Unit>()
+        val currentScopeReady = CompletableDeferred<Unit>()
+        var linkedinScopeReads = 0
+        fakeRepository.beforeScopeRead = { type ->
+            if (type == ChannelType.LINKEDIN) {
+                linkedinScopeReads++
+                if (linkedinScopeReads == 1) obsoleteScopeReady.await() else currentScopeReady.await()
+            }
+        }
+
+        val linkedin = fakeRepository.connectLinkedInViaBff("code", "state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        assertEquals(1, linkedinScopeReads)
+
+        try {
+            viewModel.disconnectChannel(facebook)
+            testScheduler.runCurrent()
+            assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+
+            obsoleteScopeReady.complete(Unit)
+            testScheduler.runCurrent()
+            assertEquals(2, linkedinScopeReads)
+            assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+            assertNull(viewModel.getScopeForAccount(facebook))
+        } finally {
+            obsoleteScopeReady.complete(Unit)
+            currentScopeReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+        assertEquals(ChannelUiState.Success(listOf(linkedin)), viewModel.uiState.value)
+    }
+
+    @Test
+    fun loadingRemainingAccountsDoesNotRestoreRemovedScope() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val linkedin = fakeRepository.connectLinkedInViaBff("code", "state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val scopeReadStarted = CompletableDeferred<Unit>()
+        val scopeReadReady = CompletableDeferred<Unit>()
+        val disconnectCleanupReady = CompletableDeferred<Unit>()
+        fakeRepository.beforeScopeRead = { type ->
+            if (type == ChannelType.LINKEDIN) {
+                scopeReadStarted.complete(Unit)
+                scopeReadReady.await()
+            }
+        }
+        fakeRepository.disconnectCleanupReady = disconnectCleanupReady
+
+        try {
+            viewModel.disconnectChannel(facebook)
+            testScheduler.runCurrent()
+            assertTrue(scopeReadStarted.isCompleted)
+
+            disconnectCleanupReady.complete(Unit)
+            testScheduler.runCurrent()
+            assertNull(viewModel.getScopeForAccount(facebook))
+
+            scopeReadReady.complete(Unit)
+            testScheduler.runCurrent()
+            assertEquals(ChannelUiState.Success(listOf(linkedin)), viewModel.uiState.value)
+            assertNull(viewModel.getScopeForAccount(facebook))
+        } finally {
+            disconnectCleanupReady.complete(Unit)
+            scopeReadReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+    }
+
+    @Test
+    fun cleanupFailureHidesDisconnectedAccountBeforeRemainingAccountsFinishLoading() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val facebook = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        val linkedin = fakeRepository.connectLinkedInViaBff("code", "state", "verifier").getOrThrow()
+        testScheduler.runCurrent()
+        val scopeReadReady = CompletableDeferred<Unit>()
+        fakeRepository.beforeScopeRead = { type ->
+            if (type == ChannelType.LINKEDIN) scopeReadReady.await()
+        }
+        fakeRepository.failDisconnectCleanup = true
+
+        try {
+            viewModel.disconnectChannel(facebook)
+            testScheduler.runCurrent()
+
+            assertTrue(viewModel.hasPendingDisconnectCleanup.value)
+            assertEquals(listOf(linkedin), (viewModel.uiState.value as ChannelUiState.Success).channels)
+            assertNull(viewModel.getScopeForAccount(facebook))
+            assertEquals(com.lttbdd.socialagent.R.string.channel_disconnect_failed, viewModel.errors.first())
+        } finally {
+            scopeReadReady.complete(Unit)
+            testScheduler.runCurrent()
+        }
+    }
+
+    @Test
+    fun disconnectReportsFacebookSignOutFailureAfterLocalDataWasRemoved() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val account = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        fakeRepository.failFacebookSignOut = true
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+        assertTrue(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(com.lttbdd.socialagent.R.string.channel_facebook_disconnect_sign_out_failed, viewModel.errors.first())
+    }
+
+    @Test
+    fun pendingDisconnectCleanupBlocksStartingFacebookAndLinkedInOAuth() = runTest {
+        testScheduler.runCurrent()
+        fakeRepository.hasPendingDisconnectCleanup.value = true
+
+        assertFalse(viewModel.beginFacebookSdkLogin())
+        viewModel.startLinkedInLogin()
+        testScheduler.runCurrent()
+
+        assertTrue(fakeRepository.sessions.isEmpty())
+        viewModel.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        viewModel.startLinkedInLogin()
+        testScheduler.runCurrent()
+        assertEquals(1, fakeRepository.sessions.size)
+    }
+
+    @Test
+    fun retryRemovesPendingChannelDataAfterAccountHasDisappeared() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        connectWithFacebookToken()
+        val account = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        fakeRepository.failDisconnectCleanup = true
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+        assertTrue(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(com.lttbdd.socialagent.R.string.channel_disconnect_failed, viewModel.errors.first())
+
+        viewModel.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+        assertTrue(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(com.lttbdd.socialagent.R.string.channel_disconnect_failed, viewModel.errors.first())
+
+        fakeRepository.failDisconnectCleanup = false
+        // Việc đọc lại danh sách kênh có thể lỗi dù lượt dọn đã có thể hoàn tất.
+        fakeRepository.loadError = true
+        viewModel.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+
+        assertFalse(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(listOf(ChannelType.FACEBOOK to account.accountId), fakeRepository.disconnects)
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+    }
+
+    @Test
+    fun retryCleanupIsIndependentOfAFailedChannelListLoad() = runTest {
+        val fakeRepository = FakeChannelRepository().apply {
+            loadError = true
+            hasPendingDisconnectCleanup.value = true
+            failDisconnectCleanup = true
+        }
+        val viewModel = ChannelViewModel(fakeRepository, callbackBus, SavedStateHandle())
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.LoadFailed, viewModel.uiState.value)
+
+        viewModel.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+
+        assertEquals(ChannelUiState.LoadFailed, viewModel.uiState.value)
+        assertTrue(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(com.lttbdd.socialagent.R.string.channel_disconnect_failed, viewModel.errors.first())
+
+        fakeRepository.failDisconnectCleanup = false
+        viewModel.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+
+        assertFalse(viewModel.hasPendingDisconnectCleanup.value)
+        assertEquals(ChannelUiState.LoadFailed, viewModel.uiState.value)
+        assertEquals(1, fakeRepository.channelLoadAttempts)
+
+        fakeRepository.loadError = false
+        viewModel.retryLoadChannels()
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.Success(emptyList()), viewModel.uiState.value)
+        assertEquals(2, fakeRepository.channelLoadAttempts)
+    }
+
+    @Test
+    fun facebookResultAfterRecreationDoesNotHideChannelLoadFailureOrCleanup() = runTest {
+        val repository = FakeChannelRepository().apply {
+            loadError = true
+            hasPendingDisconnectCleanup.value = true
+            failDisconnectCleanup = true
+            pagesResult = Result.failure(java.io.IOException("Không tải được Page"))
+        }
+        assertTrue(viewModel.beginFacebookSdkLogin())
+        val restoredState = SavedStateHandle(savedStateHandle.keys().associateWith { savedStateHandle.get<Any>(it) })
+        val restored = ChannelViewModel(repository, callbackBus, restoredState)
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.LoadFailed, restored.uiState.value)
+
+        restored.dispatchFacebookSdkResult { restored.onFacebookLoggedIn(user()) }
+        testScheduler.runCurrent()
+
+        assertEquals(ChannelNotice.FACEBOOK_PAGES_LOAD_FAILED, restored.notices.first())
+        assertEquals(ChannelUiState.LoadFailed, restored.uiState.value)
+        assertTrue(restored.hasPendingDisconnectCleanup.value)
+
+        repository.failDisconnectCleanup = false
+        restored.retryDisconnectCleanup()
+        testScheduler.runCurrent()
+        assertFalse(restored.hasPendingDisconnectCleanup.value)
+        assertEquals(ChannelUiState.LoadFailed, restored.uiState.value)
+
+        repository.loadError = false
+        restored.retryLoadChannels()
+        testScheduler.runCurrent()
+        assertEquals(ChannelUiState.Success(emptyList()), restored.uiState.value)
+    }
+
+    @Test
+    fun disconnectDemoAccountDoesNotTouchPersistentStorage() = runTest {
+        viewModel.demoEnabled = true
+        testScheduler.runCurrent()
+        viewModel.connectFacebookDemo("[DEMO] Facebook")
+        val account = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        assertTrue(!viewModel.disconnectDeletesSharedData(account))
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+
+        assertTrue(fakeRepository.disconnects.isEmpty())
+        assertTrue((viewModel.uiState.value as ChannelUiState.Success).channels.isEmpty())
     }
 
     private class FakeChannelRepository : ChannelRepository {
@@ -597,8 +1211,13 @@ class ChannelViewModelTest {
 
         override suspend fun getTokenExpiresAt(type: ChannelType, accountId: String): Long? = expiresAt
 
-        override suspend fun fetchFacebookPages(userAccessToken: String): Result<List<FacebookPage>> =
-            pagesResult ?: Result.success(pages)
+        var facebookPagesReady: CompletableDeferred<Unit>? = null
+        var facebookPageSaveReady: CompletableDeferred<Unit>? = null
+
+        override suspend fun fetchFacebookPages(userAccessToken: String): Result<List<FacebookPage>> {
+            facebookPagesReady?.await()
+            return pagesResult ?: Result.success(pages)
+        }
 
         /** Phiên Facebook mà repository nhận lần cuối (để kiểm hạn/quyền thật được chuyển xuống). */
         var lastUser: FacebookUserToken? = null
@@ -609,6 +1228,7 @@ class ChannelViewModelTest {
         val sessions = mutableListOf<Pair<String, String>>()
         var sessionResult: Result<Unit> = Result.success(Unit)
         var bffResult: Result<ChannelAccount>? = null
+        var beforeLinkedInToken: suspend () -> Unit = {}
         var lastBff: Triple<String, String, String>? = null
 
         override suspend fun startLinkedInSession(state: String, codeChallenge: String): Result<Unit> {
@@ -622,6 +1242,7 @@ class ChannelViewModelTest {
             codeVerifier: String,
         ): Result<ChannelAccount> {
             lastBff = Triple(exchangeCode, state, codeVerifier)
+            beforeLinkedInToken()
             bffResult?.let { return it }
             val account = ChannelAccount(
                 type = ChannelType.LINKEDIN,
@@ -657,6 +1278,7 @@ class ChannelViewModelTest {
             page: FacebookPage,
         ): Result<ChannelAccount> {
             lastUser = user
+            facebookPageSaveReady?.await()
             val account = ChannelAccount(
                 type = ChannelType.FACEBOOK,
                 accountId = page.id,
@@ -670,15 +1292,49 @@ class ChannelViewModelTest {
 
         /** Bật thì [getConnectedChannels] ném lỗi đọc kho (như DataStore IOException). */
         var loadError = false
+        var channelLoadAttempts = 0
 
-        override fun getConnectedChannels(): Flow<List<ChannelAccount>> =
-            if (loadError) flow { throw java.io.IOException("doc kho loi") } else channels.asStateFlow()
+        override fun getConnectedChannels(): Flow<List<ChannelAccount>> = flow {
+            channelLoadAttempts++
+            if (loadError) throw java.io.IOException("doc kho loi")
+            if (!failDisconnectCleanup) hasPendingDisconnectCleanup.value = false
+            emitAll(channels.asStateFlow())
+        }
 
-        override suspend fun getGrantedScope(type: ChannelType, accountId: String): String? =
-            if (type == ChannelType.FACEBOOK) scope else null
+        var beforeScopeRead: suspend (ChannelType) -> Unit = {}
+
+        override suspend fun getGrantedScope(type: ChannelType, accountId: String): String? {
+            beforeScopeRead(type)
+            return if (type == ChannelType.FACEBOOK) scope else null
+        }
+
+        val disconnects = mutableListOf<Pair<ChannelType, String>>()
+        var disconnectResult = Result.success(Unit)
+        var disconnectReady: CompletableDeferred<Unit>? = null
+        var disconnectCleanupReady: CompletableDeferred<Unit>? = null
+        override val hasPendingDisconnectCleanup = MutableStateFlow(false)
+        var failDisconnectCleanup = false
+        var failFacebookSignOut = false
+
+        override suspend fun retryPendingDisconnectCleanup(): Boolean {
+            if (!failDisconnectCleanup) hasPendingDisconnectCleanup.value = false
+            return !hasPendingDisconnectCleanup.value
+        }
 
         override suspend fun disconnectChannel(type: ChannelType, accountId: String): Result<Unit> {
+            disconnects.add(type to accountId)
+            disconnectReady?.await()
+            if (disconnectResult.isFailure) return disconnectResult
             channels.value = channels.value.filterNot { it.type == type && it.accountId == accountId }
+            disconnectCleanupReady?.await()
+            if (failDisconnectCleanup) {
+                hasPendingDisconnectCleanup.value = true
+                return Result.failure(ChannelException(ChannelError.DISCONNECT_CLEANUP_FAILED))
+            }
+            if (failFacebookSignOut) {
+                hasPendingDisconnectCleanup.value = true
+                return Result.failure(ChannelException(ChannelError.FACEBOOK_SIGN_OUT_FAILED))
+            }
             return Result.success(Unit)
         }
     }

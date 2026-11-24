@@ -5,6 +5,7 @@ import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookUserToken
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Repository quản lý việc kết nối kênh mạng xã hội qua OAuth.
@@ -19,6 +20,12 @@ interface ChannelRepository {
      * Lấy danh sách các kênh đã kết nối. Flow báo lỗi nếu kho không đọc được, có thể thu thập lại để thử lại.
      */
     fun getConnectedChannels(): Flow<List<ChannelAccount>>
+
+    /** Có lượt ngắt kết nối đã được lưu và còn dữ liệu cần dọn. */
+    val hasPendingDisconnectCleanup: StateFlow<Boolean>
+
+    /** Thử lại các lượt ngắt kết nối đã lưu. Trả về true khi không còn lượt nào cần dọn. */
+    suspend fun retryPendingDisconnectCleanup(): Boolean
 
     /**
      * Đăng ký phiên đăng nhập LinkedIn với BFF (`state` + `code_challenge` S256) trước khi mở trình duyệt.
@@ -36,7 +43,7 @@ interface ChannelRepository {
     ): Result<ChannelAccount> = Result.failure(UnsupportedOperationException("Chưa hỗ trợ đăng nhập LinkedIn qua BFF"))
 
     /**
-     * Ngắt kết nối một kênh và xóa token khỏi Keystore/SecureTokenStore.
+     * Ngắt kết nối và xoá token, metadata. Xoá dữ liệu cục bộ theo loại kênh khi ngắt tài khoản cuối.
      */
     suspend fun disconnectChannel(type: ChannelType, accountId: String): Result<Unit>
 

@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.lttbdd.socialagent.core.database.entity.DraftEntity
+import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.PostStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -109,4 +110,7 @@ abstract class DraftDao {
 
     @Update
     protected abstract suspend fun update(draft: DraftEntity): Int
+
+    @Query("DELETE FROM drafts WHERE channel = :channel")
+    abstract suspend fun deleteByChannel(channel: ChannelType)
 }

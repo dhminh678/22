@@ -1,5 +1,6 @@
 package com.lttbdd.socialagent.feature.channel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lttbdd.socialagent.core.model.ChannelAccount
@@ -15,15 +16,21 @@ import com.lttbdd.socialagent.data.network.LinkedInBffAuth
 import com.lttbdd.socialagent.data.network.PkceUtil
 import com.lttbdd.socialagent.data.repository.ChannelRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -38,10 +45,12 @@ import javax.inject.Inject
 class ChannelViewModel @Inject constructor(
     private val repository: ChannelRepository,
     private val callbackBus: LinkedInCallbackBus,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<ChannelUiState>(ChannelUiState.Loading)
+    private val _uiState = MutableStateFlow<ChannelUiState>(ChannelUiState.Loading())
     val uiState: StateFlow<ChannelUiState> = _uiState.asStateFlow()
+    val hasPendingDisconnectCleanup: StateFlow<Boolean> = repository.hasPendingDisconnectCleanup
 
     /** Quyền token đã được cấp thật, theo từng kênh. Rỗng/null nghĩa là chưa xác định được. */
     private var grantedScopes: Map<String, String?> = emptyMap()
@@ -52,6 +61,8 @@ class ChannelViewModel @Inject constructor(
 
     /** Danh sách kênh mới nhất từ repository (dùng khi UiState đang ở trạng thái khác Success). */
     private var knownChannels: List<ChannelAccount> = emptyList()
+    private enum class ChannelListLoadState { LOADING, FAILED, LOADED }
+    private var channelListLoadState = ChannelListLoadState.LOADING
 
     private val _pagePicker = MutableStateFlow<FacebookPagePicker?>(null)
 
@@ -73,13 +84,24 @@ class ChannelViewModel @Inject constructor(
     /** Phát một lần mã chuỗi lỗi ([androidx.annotation.StringRes]) cần báo cho người dùng. */
     val errors: Flow<Int> = _errors.receiveAsFlow()
 
-    private val _browserRequests = Channel<String>(Channel.BUFFERED)
+    private data class LinkedInBrowserRequest(val state: String, val url: String)
 
-    /** URL cần mở bằng trình duyệt hệ thống (đăng nhập LinkedIn). */
+    private val _browserRequests = Channel<LinkedInBrowserRequest>(Channel.CONFLATED)
+
+    /** Chỉ mở trình duyệt nếu URL vẫn thuộc phiên LinkedIn đang chờ. */
     val browserRequests: Flow<String> = _browserRequests.receiveAsFlow()
+        .filter { request -> pendingLinkedIn?.state == request.state }
+        .map { it.url }
 
     /** Phiên Facebook giữ tạm trong bộ nhớ trong lúc chờ chọn Page; xóa khi chọn xong hoặc hủy. */
     private var pendingFacebookUser: FacebookUserToken? = null
+    private var facebookLoginJob: Job? = null
+
+    private enum class FacebookSdkRequest { PENDING, INVALIDATED }
+
+    private var facebookSdkRequest: FacebookSdkRequest?
+        get() = savedStateHandle[FACEBOOK_SDK_REQUEST_KEY]
+        set(value) { savedStateHandle[FACEBOOK_SDK_REQUEST_KEY] = value }
 
     /** Phiên đăng nhập LinkedIn đang chờ deep link; chỉ nằm trong RAM (verifier không được lưu ở đâu khác). */
     private class PendingLinkedInLogin(val state: String, val codeVerifier: String)
@@ -98,6 +120,10 @@ class ChannelViewModel @Inject constructor(
      */
     internal var demoEnabled: Boolean = BuildConfig.DEBUG
 
+    private var disconnectingChannelType: ChannelType? = null
+    private var retryingDisconnectCleanup = false
+    // Job đã hủy có thể vẫn chờ I/O kết thúc. Chỉ Job còn hoạt động giữ chỉ báo tải.
+    private val oauthOperations = mutableSetOf<Job>()
     private var demoChannels: List<ChannelAccount> = emptyList()
 
     /** Đồng hồ để xác định token hết hạn; tách ra để unit test điều khiển được thời gian. */
@@ -109,6 +135,8 @@ class ChannelViewModel @Inject constructor(
     }
 
     companion object {
+        private const val FACEBOOK_SDK_REQUEST_KEY = "facebook_sdk_request"
+
         /** Thời gian chờ người dùng hoàn tất đăng nhập LinkedIn trong trình duyệt. */
         const val LINKEDIN_LOGIN_TIMEOUT_MILLIS = 5 * 60 * 1000L
 
@@ -121,11 +149,13 @@ class ChannelViewModel @Inject constructor(
             repository.getConnectedChannels()
                 // Đọc kho lỗi (DataStore IOException/CorruptionException...) không được làm app crash.
                 .catch {
-                    _uiState.value = ChannelUiState.LoadFailed
+                    channelListLoadState = ChannelListLoadState.FAILED
+                    publishChannels()
                 }
-                .collect { channels ->
-                    // Nạp quyền thật và trạng thái hạn token trước khi phát UiState để ma trận không hiện sai.
+                .collectLatest { channels ->
+                    // Bỏ lượt đọc cũ nếu danh sách đổi trong khi đang đọc quyền và hạn token.
                     knownChannels = channels.map { resolveAccount(it) }
+                    channelListLoadState = ChannelListLoadState.LOADED
                     publishChannels()
                 }
         }
@@ -133,13 +163,111 @@ class ChannelViewModel @Inject constructor(
 
     fun retryLoadChannels() {
         if (_uiState.value != ChannelUiState.LoadFailed) return
-        _uiState.value = ChannelUiState.Loading
+        channelListLoadState = ChannelListLoadState.LOADING
+        publishChannels()
         loadChannels()
     }
 
-    /** Phát danh sách hiện tại: kênh thật đã kết nối, cộng kênh demo (chỉ trong RAM, bản debug). */
+    internal fun retryDisconnectCleanup() {
+        if (_uiState.value is ChannelUiState.Loading || !hasPendingDisconnectCleanup.value) return
+        retryingDisconnectCleanup = true
+        publishChannels()
+        viewModelScope.launch {
+            try {
+                if (!repository.retryPendingDisconnectCleanup()) _errors.trySend(R.string.channel_disconnect_failed)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _errors.trySend(R.string.channel_disconnect_failed)
+            } finally {
+                retryingDisconnectCleanup = false
+                publishChannels()
+            }
+        }
+    }
+
+    /** Giữ danh sách đã tải trên màn hình trong khi một thao tác khác đang chạy. */
     private fun publishChannels() {
-        _uiState.value = ChannelUiState.Success(channels = knownChannels + demoChannels)
+        val channels = knownChannels + demoChannels
+        _uiState.value = when {
+            channelListLoadState == ChannelListLoadState.LOADING -> ChannelUiState.Loading()
+            disconnectingChannelType != null || retryingDisconnectCleanup || oauthOperations.any { it.isActive } ->
+                ChannelUiState.Loading(
+                    channels = if (channelListLoadState == ChannelListLoadState.LOADED) channels else emptyList(),
+                )
+            channelListLoadState == ChannelListLoadState.FAILED -> ChannelUiState.LoadFailed
+            else -> ChannelUiState.Success(channels)
+        }
+    }
+
+    private suspend fun <T> withOAuthLoading(operation: suspend () -> T): T {
+        val job = currentCoroutineContext().job
+        oauthOperations.add(job)
+        publishChannels()
+        try {
+            return operation()
+        } finally {
+            oauthOperations.remove(job)
+            publishChannels()
+        }
+    }
+
+    internal fun disconnectDeletesSharedData(account: ChannelAccount): Boolean =
+        account !in demoChannels && knownChannels.count { it.type == account.type } == 1
+
+    internal fun canDisconnectChannel(account: ChannelAccount): Boolean =
+        channelListLoadState == ChannelListLoadState.LOADED &&
+            disconnectingChannelType == null && !retryingDisconnectCleanup &&
+            (account in knownChannels || account in demoChannels)
+
+    fun disconnectChannel(account: ChannelAccount) {
+        if (!canDisconnectChannel(account)) return
+        val isDemo = account in demoChannels
+        if (!isDemo && account.type == ChannelType.FACEBOOK && facebookSdkRequest == FacebookSdkRequest.PENDING) {
+            facebookSdkRequest = FacebookSdkRequest.INVALIDATED
+        }
+        disconnectingChannelType = account.type
+        publishChannels()
+        viewModelScope.launch {
+            try {
+                val result = if (isDemo) {
+                    demoChannels = demoChannels - account
+                    Result.success(Unit)
+                } else {
+                    when (account.type) {
+                        ChannelType.FACEBOOK -> {
+                            facebookLoginJob?.cancel()
+                            clearFacebookPagePicker()
+                        }
+                        ChannelType.LINKEDIN -> {
+                            linkedInLoginJob?.cancel()
+                            pendingLinkedIn = null
+                        }
+                    }
+                    repository.disconnectChannel(account.type, account.accountId)
+                }
+                val error = result.exceptionOrNull()?.toChannelError()
+                if (error == null || error == ChannelError.DISCONNECT_CLEANUP_FAILED ||
+                    error == ChannelError.FACEBOOK_SIGN_OUT_FAILED
+                ) {
+                    val key = scopeKey(account)
+                    grantedScopes = grantedScopes - key
+                    pageTasks = pageTasks - key
+                    if (account.type == ChannelType.FACEBOOK) facebookProfiles.remove(account.accountId)
+                    knownChannels = knownChannels.filterNot {
+                        it.type == account.type && it.accountId == account.accountId
+                    }
+                }
+                when (error) {
+                    null -> _notices.trySend(ChannelNotice.CHANNEL_DISCONNECTED)
+                    ChannelError.FACEBOOK_SIGN_OUT_FAILED -> _errors.trySend(R.string.channel_facebook_disconnect_sign_out_failed)
+                    else -> _errors.trySend(R.string.channel_disconnect_failed)
+                }
+            } finally {
+                disconnectingChannelType = null
+                publishChannels()
+            }
+        }
     }
 
     /**
@@ -147,12 +275,18 @@ class ChannelViewModel @Inject constructor(
      * token đã quá hạn thì đổi CONNECTED thành TOKEN_EXPIRED (lưu trạng thái này ở UI, không đụng token đã lưu).
      */
     private suspend fun resolveAccount(account: ChannelAccount): ChannelAccount {
-        grantedScopes = grantedScopes + (scopeKey(account) to repository.getGrantedScope(account.type, account.accountId))
-        pageTasks = pageTasks + (scopeKey(account) to repository.getPageTasks(account.type, account.accountId))
-        if (account.type == ChannelType.FACEBOOK) {
-            facebookProfiles[account.accountId] = repository.isFacebookProfile(account.accountId)
-        }
+        val key = scopeKey(account)
+        val scope = repository.getGrantedScope(account.type, account.accountId)
+        val tasks = repository.getPageTasks(account.type, account.accountId)
+        val isFacebook = account.type == ChannelType.FACEBOOK
+        val profile = if (isFacebook) repository.isFacebookProfile(account.accountId) else null
         val expiresAt = repository.getTokenExpiresAt(account.type, account.accountId)
+
+        // Dùng bộ nhớ đệm hiện tại sau các lần đọc có thể tạm dừng.
+        grantedScopes = grantedScopes + (key to scope)
+        pageTasks = pageTasks + (key to tasks)
+        if (isFacebook) facebookProfiles[account.accountId] = profile
+
         return if (account.status == ConnectionStatus.CONNECTED && expiresAt != null && clock() >= expiresAt) {
             account.copy(status = ConnectionStatus.TOKEN_EXPIRED)
         } else {
@@ -218,6 +352,7 @@ class ChannelViewModel @Inject constructor(
      * 4. chờ deep link của BFF ([onLinkedInCallback]); quá hạn thì báo timeout.
      */
     fun startLinkedInLogin() {
+        if (hasPendingDisconnectCleanup.value || disconnectingChannelType == ChannelType.LINKEDIN) return
         if (!LinkedInBffAuth.isValidBaseUrl(linkedInBffUrl)) {
             _notices.trySend(ChannelNotice.LINKEDIN_LOGIN_FAILED)
             return
@@ -228,15 +363,17 @@ class ChannelViewModel @Inject constructor(
             val verifier = PkceUtil.generateCodeVerifier()
             val state = PkceUtil.generateState()
             // BFF trên gói free có thể đang ngủ và mất tới ~1 phút để dậy: hiện tiến trình thay vì im lặng.
-            _uiState.value = ChannelUiState.Loading
-            val registered = repository.startLinkedInSession(state, PkceUtil.generateCodeChallengeS256(verifier))
-            publishChannels()
+            val registered = withOAuthLoading {
+                repository.startLinkedInSession(state, PkceUtil.generateCodeChallengeS256(verifier))
+            }
             if (registered.isFailure) {
                 _notices.trySend(ChannelNotice.LINKEDIN_LOGIN_FAILED)
                 return@launch
             }
             pendingLinkedIn = PendingLinkedInLogin(state, verifier)
-            _browserRequests.send(LinkedInBffAuth.authorizationUrl(linkedInClientId, linkedInBffUrl, state))
+            _browserRequests.send(
+                LinkedInBrowserRequest(state, LinkedInBffAuth.authorizationUrl(linkedInClientId, linkedInBffUrl, state)),
+            )
             delay(linkedInLoginTimeoutMillis)
             if (pendingLinkedIn?.state == state) {
                 pendingLinkedIn = null
@@ -273,11 +410,13 @@ class ChannelViewModel @Inject constructor(
             is LinkedInAuthRedirect.Result.Code -> {
                 linkedInLoginJob?.cancel()
                 pendingLinkedIn = null
-                viewModelScope.launch {
-                    _uiState.value = ChannelUiState.Loading
-                    applyConnectResult(
-                        repository.connectLinkedInViaBff(result.exchangeCode, pending.state, pending.codeVerifier),
-                    )
+                // Vẫn cho phép ngắt kết nối hủy lượt đăng nhập trong lúc BFF đang đổi mã.
+                linkedInLoginJob = viewModelScope.launch {
+                    withOAuthLoading {
+                        applyConnectResult(
+                            repository.connectLinkedInViaBff(result.exchangeCode, pending.state, pending.codeVerifier),
+                        )
+                    }
                 }
             }
         }
@@ -289,13 +428,39 @@ class ChannelViewModel @Inject constructor(
         _notices.trySend(notice)
     }
 
-    /** Người dùng bấm Hủy trong màn Facebook Login: không thay đổi gì, chỉ báo để Fragment hỏi đổi tài khoản. */
+    /** Chỉ một lượt có thể chờ kết quả từ cùng trình khởi chạy, kể cả lượt đã bị vô hiệu hóa. */
+    fun beginFacebookSdkLogin(): Boolean {
+        if (hasPendingDisconnectCleanup.value || facebookSdkRequest != null ||
+            disconnectingChannelType == ChannelType.FACEBOOK
+        ) return false
+        facebookSdkRequest = FacebookSdkRequest.PENDING
+        return true
+    }
+
+    fun dispatchFacebookSdkResult(deliver: () -> Unit) {
+        // SDK cập nhật token hiện tại khi xử lý kết quả. Bỏ qua lượt cũ trước bước đó.
+        if (facebookSdkRequest != FacebookSdkRequest.PENDING) {
+            facebookSdkRequest = null
+            return
+        }
+        deliver()
+        // Giải phóng lượt đăng nhập nếu SDK không gọi callback cho kết quả này.
+        onFacebookLoginFailed()
+    }
+
+    private fun consumeFacebookSdkLogin(): Boolean {
+        if (facebookSdkRequest != FacebookSdkRequest.PENDING) return false
+        facebookSdkRequest = null
+        return true
+    }
+
+    /** Người dùng bấm Hủy trong màn Facebook Login: báo để Fragment hỏi đổi tài khoản. */
     fun onFacebookLoginCancelled() {
-        _notices.trySend(ChannelNotice.FACEBOOK_LOGIN_CANCELLED)
+        if (consumeFacebookSdkLogin()) _notices.trySend(ChannelNotice.FACEBOOK_LOGIN_CANCELLED)
     }
 
     fun onFacebookLoginFailed() {
-        _notices.trySend(ChannelNotice.FACEBOOK_LOGIN_FAILED)
+        if (consumeFacebookSdkLogin()) _notices.trySend(ChannelNotice.FACEBOOK_LOGIN_FAILED)
     }
 
     /**
@@ -305,51 +470,60 @@ class ChannelViewModel @Inject constructor(
      * - Nhiều Page: phát [pagePicker] để người dùng chọn.
      */
     fun onFacebookLoggedIn(user: FacebookUserToken) {
-        viewModelScope.launch {
-            _uiState.value = ChannelUiState.Loading
-            val pagesResult = repository.fetchFacebookPages(user.accessToken)
-            if (pagesResult.isFailure) {
-                // Lỗi mạng/quyền khi tải Page KHÔNG đồng nghĩa "không có Page": không nối bằng hồ sơ cá nhân,
-                // chỉ báo lỗi để người dùng thử lại.
-                _notices.trySend(ChannelNotice.FACEBOOK_PAGES_LOAD_FAILED)
-                publishChannels()
-                return@launch
-            }
-            val pages = pagesResult.getOrThrow()
-            when {
-                pages.size > 1 -> {
-                    pendingFacebookUser = user
-                    publishChannels()
-                    _pagePicker.value = FacebookPagePicker(pages)
+        if (!consumeFacebookSdkLogin()) return
+        if (disconnectingChannelType == ChannelType.FACEBOOK) return
+        facebookLoginJob?.cancel()
+        clearFacebookPagePicker()
+        facebookLoginJob = viewModelScope.launch {
+            withOAuthLoading {
+                val pagesResult = repository.fetchFacebookPages(user.accessToken)
+                if (pagesResult.isFailure) {
+                    // Lỗi mạng/quyền khi tải Page KHÔNG đồng nghĩa "không có Page": không nối bằng hồ sơ cá nhân,
+                    // chỉ báo lỗi để người dùng thử lại.
+                    _notices.trySend(ChannelNotice.FACEBOOK_PAGES_LOAD_FAILED)
+                    return@withOAuthLoading
                 }
-                pages.size == 1 -> applyConnectResult(repository.connectFacebookSelectedPage(user, pages.first()))
-                else -> applyConnectResult(
-                    repository.connectFacebookProfile(user),
-                    successNotice = ChannelNotice.NO_FACEBOOK_PAGES,
-                )
+                val pages = pagesResult.getOrThrow()
+                when {
+                    pages.size > 1 -> {
+                        pendingFacebookUser = user
+                        _pagePicker.value = FacebookPagePicker(pages)
+                    }
+                    pages.size == 1 -> applyConnectResult(repository.connectFacebookSelectedPage(user, pages.first()))
+                    else -> applyConnectResult(
+                        repository.connectFacebookProfile(user),
+                        successNotice = ChannelNotice.NO_FACEBOOK_PAGES,
+                    )
+                }
             }
         }
     }
 
     /** Người dùng chọn một Page trong hộp thoại: kết nối Page đó. */
-    fun selectFacebookPage(page: FacebookPage) {
+    fun selectFacebookPage(picker: FacebookPagePicker, index: Int) {
+        if (picker !== _pagePicker.value) return
+        val page = picker.pages.getOrNull(index) ?: return
         val user = pendingFacebookUser ?: return
-        pendingFacebookUser = null
-        _pagePicker.value = null
-        viewModelScope.launch {
-            _uiState.value = ChannelUiState.Loading
-            applyConnectResult(repository.connectFacebookSelectedPage(user, page))
+        clearFacebookPagePicker()
+        facebookLoginJob = viewModelScope.launch {
+            withOAuthLoading {
+                applyConnectResult(repository.connectFacebookSelectedPage(user, page))
+            }
         }
     }
 
     /** Người dùng đóng hộp thoại chọn Page mà không chọn: không kết nối gì. */
-    fun cancelFacebookPagePicker() {
+    fun cancelFacebookPagePicker(picker: FacebookPagePicker) {
+        if (picker === _pagePicker.value) clearFacebookPagePicker()
+    }
+
+    private fun clearFacebookPagePicker() {
         pendingFacebookUser = null
         _pagePicker.value = null
     }
 
     override fun onCleared() {
-        pendingFacebookUser = null
+        clearFacebookPagePicker()
         pendingLinkedIn = null
         super.onCleared()
     }
@@ -371,8 +545,6 @@ class ChannelViewModel @Inject constructor(
             successNotice?.let { _notices.trySend(it) }
             _connected.trySend(account.displayName)
         }.onFailure { error ->
-            // Quay về danh sách hiện có (thoát Loading) và báo lỗi bằng chuỗi đã dịch, một lần.
-            publishChannels()
             _errors.trySend(errorMessageRes(error.toChannelError()))
         }
     }
@@ -381,6 +553,7 @@ class ChannelViewModel @Inject constructor(
         ChannelError.NETWORK -> R.string.channel_error_network
         ChannelError.CHANNELS_LOAD_FAILED -> R.string.channel_error_load_failed
         ChannelError.CHANNELS_SAVE_FAILED -> R.string.channel_error_save_failed
+        ChannelError.DISCONNECT_CLEANUP_FAILED -> R.string.channel_disconnect_failed
         ChannelError.LINKEDIN_CONFIG_INVALID -> R.string.channel_error_linkedin_config
         ChannelError.LINKEDIN_SESSION_START_FAILED -> R.string.channel_error_linkedin_session
         ChannelError.LINKEDIN_TOKEN_EXCHANGE_FAILED -> R.string.channel_error_linkedin_exchange
@@ -388,6 +561,7 @@ class ChannelViewModel @Inject constructor(
         ChannelError.LINKEDIN_PROFILE_FAILED -> R.string.channel_error_linkedin_profile
         ChannelError.FACEBOOK_PROFILE_FAILED -> R.string.channel_error_facebook_profile
         ChannelError.FACEBOOK_PAGES_LOAD_FAILED -> R.string.channel_facebook_pages_load_failed
+        ChannelError.FACEBOOK_SIGN_OUT_FAILED -> R.string.channel_facebook_disconnect_sign_out_failed
         ChannelError.UNKNOWN -> R.string.channel_oauth_error_generic
     }
 }

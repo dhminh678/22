@@ -1,6 +1,8 @@
 package com.lttbdd.socialagent.di
 
 import android.content.Context
+import com.lttbdd.socialagent.data.repository.ChannelDataCleanup
+import com.lttbdd.socialagent.data.repository.LocalChannelDataCleanup
 import com.lttbdd.socialagent.data.repository.ChannelAccountStore
 import com.lttbdd.socialagent.data.repository.ChannelRepository
 import com.lttbdd.socialagent.data.repository.ChannelRepositoryImpl
@@ -25,6 +27,9 @@ abstract class SocialRepositoryModule {
     abstract fun bindChannelRepository(
         impl: ChannelRepositoryImpl,
     ): ChannelRepository
+
+    @Binds
+    abstract fun bindChannelDataCleanup(impl: LocalChannelDataCleanup): ChannelDataCleanup
 
     @Binds
     @Singleton

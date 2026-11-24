@@ -18,6 +18,7 @@ class ChannelAdapter(
     private val getScopeForAccount: (ChannelAccount) -> String?,
     private val getTasksForAccount: (ChannelAccount) -> List<String>? = { null },
     private val isFacebookProfile: (ChannelAccount) -> Boolean? = { null },
+    private val onDisconnect: (ChannelAccount) -> Unit,
 ) : ListAdapter<ChannelAccount, ChannelAdapter.ChannelViewHolder>(ChannelDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChannelViewHolder {
@@ -26,7 +27,7 @@ class ChannelAdapter(
             parent,
             false,
         )
-        return ChannelViewHolder(binding, getScopeForAccount, getTasksForAccount, isFacebookProfile)
+        return ChannelViewHolder(binding, getScopeForAccount, getTasksForAccount, isFacebookProfile, onDisconnect)
     }
 
     override fun onBindViewHolder(holder: ChannelViewHolder, position: Int) {
@@ -38,6 +39,7 @@ class ChannelAdapter(
         private val getScopeForAccount: (ChannelAccount) -> String?,
         private val getTasksForAccount: (ChannelAccount) -> List<String>?,
         private val isFacebookProfile: (ChannelAccount) -> Boolean?,
+        private val onDisconnect: (ChannelAccount) -> Unit,
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(account: ChannelAccount) {
@@ -49,6 +51,7 @@ class ChannelAdapter(
                 },
             )
             binding.tvDisplayName.text = account.displayName
+            binding.btnDisconnect.setOnClickListener { onDisconnect(account) }
 
             val statusText = when (account.status) {
                 ConnectionStatus.CONNECTED -> context.getString(R.string.status_connected)

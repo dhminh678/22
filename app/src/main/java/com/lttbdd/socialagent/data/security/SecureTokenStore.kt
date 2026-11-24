@@ -53,6 +53,17 @@ class SecureTokenStore @Inject constructor(
         context.dataStore.edit { it[prefKey] = cipherText }
     }
 
+    override suspend fun completeFacebookSignOut(write: PendingChannelWrite): PendingChannelWrite {
+        require(write.disconnect && write.facebookSessionToSignOut != null)
+        val completed = write.copy(facebookSessionToSignOut = null)
+        context.dataStore.edit { preferences ->
+            val key = if (isLegacy(preferences, write)) legacyPendingKey else descriptorKey(write.type, write.accountId)
+            check(decodePendingWrite(preferences[key]) == write)
+            preferences[key] = json.encodeToString(completed)
+        }
+        return completed
+    }
+
     override suspend fun stageToken(write: PendingChannelWrite, token: OAuthToken) {
         val cipherText = encryptToken(token)
         context.dataStore.edit { preferences ->
@@ -143,6 +154,19 @@ class SecureTokenStore @Inject constructor(
      * Xóa token khỏi bộ lưu trữ khi người dùng ngắt kết nối kênh.
      */
     override suspend fun removeToken(channelType: ChannelType, accountId: String) {
+        removeTokenAndPending(channelType, accountId, disconnect = null)
+    }
+
+    override suspend fun stageDisconnect(write: PendingChannelWrite) {
+        require(write.disconnect)
+        removeTokenAndPending(write.type, write.accountId, disconnect = write)
+    }
+
+    private suspend fun removeTokenAndPending(
+        channelType: ChannelType,
+        accountId: String,
+        disconnect: PendingChannelWrite?,
+    ) {
         val prefKey = stringPreferencesKey(buildTokenKey(channelType, accountId))
         context.dataStore.edit { preferences ->
             preferences.remove(prefKey)
@@ -154,6 +178,7 @@ class SecureTokenStore @Inject constructor(
                 preferences.remove(legacyPendingKey)
                 preferences.remove(legacyStagedKey)
             }
+            if (disconnect != null) preferences[descriptor] = json.encodeToString(disconnect)
         }
     }
 

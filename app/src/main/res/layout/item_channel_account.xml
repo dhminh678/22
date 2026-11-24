@@ -67,6 +67,14 @@
             android:layout_marginTop="8dp"
             android:orientation="vertical" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnDisconnect"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:text="@string/channel_disconnect" />
+
     </LinearLayout>
 
 </com.google.android.material.card.MaterialCardView>

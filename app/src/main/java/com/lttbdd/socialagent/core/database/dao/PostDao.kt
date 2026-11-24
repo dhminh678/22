@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.lttbdd.socialagent.core.database.entity.PostEntity
+import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.PostStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -36,4 +37,7 @@ interface PostDao {
 
     @Update
     suspend fun update(post: PostEntity)
+
+    @Query("DELETE FROM posts WHERE channel = :channel")
+    suspend fun deleteByChannel(channel: ChannelType)
 }

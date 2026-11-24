@@ -45,6 +45,13 @@
     <string name="channel_connect_linkedin">Connect LinkedIn</string>
     <string name="channel_status_expired">Token Expired</string>
     <string name="channel_empty_desc">Connect a channel (Facebook Page or LinkedIn) to view platform capability statuses</string>
+    <string name="channel_disconnect">Disconnect</string>
+    <string name="channel_disconnect_title">Disconnect %1$s?</string>
+    <string name="channel_disconnect_message">This removes the account connection from this device.</string>
+    <string name="channel_disconnect_last_message">This removes the last account for this network from this device and deletes its local drafts, posts, comments, and metrics.</string>
+    <string name="channel_disconnected_notice">Channel disconnected.</string>
+    <string name="channel_disconnect_failed">Could not finish disconnect cleanup.</string>
+    <string name="channel_facebook_disconnect_sign_out_failed">Channel data was removed. Retry disconnect cleanup to finish signing out of Facebook.</string>
     <string name="channel_capabilities_header">Platform Capabilities Matrix:</string>
     <string name="channel_facebook_login_error">Facebook login error</string>
     <string name="channel_facebook_cancel_title">Facebook login cancelled</string>
@@ -76,6 +83,7 @@
     <string name="channel_type_linkedin">LinkedIn</string>
     <string name="channel_linkedin_session_expired">The LinkedIn sign-in session has expired. Please tap Connect LinkedIn again.</string>
     <string name="channel_retry_load">Try again</string>
+    <string name="channel_retry_cleanup">Retry disconnect cleanup</string>
     <string name="channel_error_save_failed">Could not save the channel connection. Please try again.</string>
     <string name="channel_error_load_failed">Could not load connected channels. Please try again.</string>
     <string name="channel_not_configured_notice">%1$s is not configured in local.properties, so real sign-in is unavailable in this build.</string>

@@ -44,6 +44,13 @@
     <string name="channel_connect_linkedin">Kết nối LinkedIn</string>
     <string name="channel_status_expired">Token đã hết hạn</string>
     <string name="channel_empty_desc">Kết nối một kênh (Facebook Page hoặc LinkedIn) để xem trạng thái chức năng theo từng nền tảng</string>
+    <string name="channel_disconnect">Ngắt kết nối</string>
+    <string name="channel_disconnect_title">Ngắt kết nối %1$s?</string>
+    <string name="channel_disconnect_message">Thao tác này xóa kết nối của tài khoản trên thiết bị.</string>
+    <string name="channel_disconnect_last_message">Thao tác này ngắt tài khoản cuối cùng của mạng xã hội này và xóa bản nháp, bài đăng, bình luận cùng số liệu lưu trên thiết bị.</string>
+    <string name="channel_disconnected_notice">Đã ngắt kết nối kênh.</string>
+    <string name="channel_disconnect_failed">Không thể hoàn tất việc ngắt kết nối.</string>
+    <string name="channel_facebook_disconnect_sign_out_failed">Đã xóa dữ liệu kênh. Hãy thử hoàn tất ngắt kết nối để đăng xuất Facebook.</string>
     <string name="channel_capabilities_header">Ma trận khả năng hỗ trợ:</string>
     <string name="channel_facebook_login_error">Lỗi đăng nhập Facebook</string>
     <string name="channel_facebook_cancel_title">Đã hủy đăng nhập Facebook</string>
@@ -75,6 +82,7 @@
     <string name="channel_type_linkedin">LinkedIn</string>
     <string name="channel_linkedin_session_expired">Phiên đăng nhập LinkedIn đã hết hạn. Vui lòng bấm Kết nối LinkedIn lại.</string>
     <string name="channel_retry_load">Thử lại</string>
+    <string name="channel_retry_cleanup">Thử hoàn tất ngắt kết nối</string>
     <string name="channel_error_save_failed">Không lưu được kết nối kênh. Vui lòng thử lại.</string>
     <string name="channel_error_load_failed">Không tải được danh sách kênh đã kết nối. Vui lòng thử lại.</string>
     <string name="channel_not_configured_notice">Chưa cấu hình %1$s trong local.properties nên bản này không đăng nhập thật được.</string>

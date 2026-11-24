@@ -3,6 +3,7 @@ package com.lttbdd.socialagent.core.database
 import android.app.Application
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
+import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.lttbdd.socialagent.core.database.dao.DraftDeletion
@@ -14,9 +15,11 @@ import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.CommentCategory
 import com.lttbdd.socialagent.core.model.CommentStatus
 import com.lttbdd.socialagent.core.model.PostStatus
+import com.lttbdd.socialagent.data.repository.LocalChannelDataCleanup
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -28,6 +31,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 /**
  * Test DAO trên DB in-memory: chạy trên JVM nhờ Robolectric, không cần máy ảo.
@@ -93,6 +97,93 @@ class AppDatabaseTest {
             category = null,
             status = status,
         )
+
+    @Test
+    fun retryOfTheSameChannelCleanupPreservesDraftsCreatedAfterTheFirstCleanup() = runTest {
+        val type = ChannelType.FACEBOOK
+        db.draftDao().upsert(draft("original", 0))
+        LocalChannelDataCleanup(db).clear(type, "first-disconnect")
+
+        db.draftDao().upsert(draft("new", 1))
+        val cleanupRetry = LocalChannelDataCleanup(db)
+        cleanupRetry.clear(type, "first-disconnect")
+        assertEquals(listOf("new"), db.draftDao().observeAll().first().map { it.id })
+
+        cleanupRetry.clear(type, "second-disconnect")
+        assertTrue(db.draftDao().observeAll().first().isEmpty())
+    }
+
+    @Test
+    fun migrationFromVersionOnePreservesExistingDraftsAndAddsCleanupReceipts() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "channel-cleanup-migration.db"
+        val oldSchema = JSONObject(File("schemas/${AppDatabase::class.java.name}/1.json").readText())
+            .getJSONObject("database")
+        val path = context.getDatabasePath(name)
+        path.parentFile?.mkdirs()
+        try {
+            SQLiteDatabase.openOrCreateDatabase(path, null).use { oldDb ->
+                val entities = oldSchema.getJSONArray("entities")
+                for (index in 0 until entities.length()) {
+                    val entity = entities.getJSONObject(index)
+                    val table = entity.getString("tableName")
+                    oldDb.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", table))
+                    val indices = entity.getJSONArray("indices")
+                    for (i in 0 until indices.length()) {
+                        oldDb.execSQL(indices.getJSONObject(i).getString("createSql").replace("\${TABLE_NAME}", table))
+                    }
+                }
+                val setup = oldSchema.getJSONArray("setupQueries")
+                for (index in 0 until setup.length()) oldDb.execSQL(setup.getString(index))
+                oldDb.execSQL(
+                    "INSERT INTO drafts (id, topicId, channel, text, approved, updatedAtMillis) " +
+                        "VALUES ('existing', 't1', 'FACEBOOK', 'Saved draft', 0, 1)",
+                )
+                oldDb.version = 1
+            }
+
+            val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+            try {
+                assertEquals("Saved draft", migrated.draftDao().getById("existing")?.text)
+                assertNull(migrated.channelCleanupDao().getCompletedOperation(ChannelType.FACEBOOK))
+            } finally {
+                migrated.close()
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun channelCleanupRemovesLocalRowsAndKeepsTheOtherNetwork() = runTest {
+        val facebook = ChannelType.FACEBOOK
+        val linkedin = ChannelType.LINKEDIN
+        db.draftDao().upsertAll(listOf(draft("d1", 0), draft("d2", 0, channel = linkedin)))
+        db.postDao().insertIfAbsent(post("p1", "key-a"))
+        db.postDao().insertIfAbsent(post("p2", "key-b").copy(channel = linkedin, draftId = "d2"))
+        db.commentDao().upsertAll(
+            listOf(
+                comment("c", facebook, "remote", CommentStatus.NEW, 0L),
+                comment("c", linkedin, "remote", CommentStatus.NEW, 0L),
+            ),
+        )
+        for (type in ChannelType.entries) {
+            db.metricsDao().insert(
+                MetricsSnapshotEntity(
+                    channel = type, remotePostId = "remote", likes = 1, comments = 0,
+                    shares = 0, impressions = null, capturedAtMillis = 0L,
+                ),
+            )
+        }
+
+        LocalChannelDataCleanup(db).clear(linkedin, "disconnect-linkedin")
+
+        assertEquals(listOf("d1"), db.draftDao().observeAll().first().map { it.id })
+        assertEquals(listOf("p1"), db.postDao().observeAll().first().map { it.id })
+        assertEquals(listOf(facebook), db.commentDao().observe().first().map { it.channel })
+        assertNull(db.metricsDao().getLatest(linkedin, "remote"))
+        assertNotNull(db.metricsDao().getLatest(facebook, "remote"))
+    }
 
     @Test
     fun `drafts are returned newest first and upsert replaces existing draft`() = runTest {

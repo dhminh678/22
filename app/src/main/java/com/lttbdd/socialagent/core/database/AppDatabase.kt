@@ -1,11 +1,14 @@
 package com.lttbdd.socialagent.core.database
 
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.lttbdd.socialagent.core.database.dao.ChannelCleanupDao
 import com.lttbdd.socialagent.core.database.dao.CommentDao
 import com.lttbdd.socialagent.core.database.dao.DraftDao
 import com.lttbdd.socialagent.core.database.dao.MetricsDao
 import com.lttbdd.socialagent.core.database.dao.PostDao
+import com.lttbdd.socialagent.core.database.entity.ChannelCleanupReceipt
 import com.lttbdd.socialagent.core.database.entity.CommentEntity
 import com.lttbdd.socialagent.core.database.entity.DraftEntity
 import com.lttbdd.socialagent.core.database.entity.MetricsSnapshotEntity
@@ -23,11 +26,14 @@ import com.lttbdd.socialagent.core.database.entity.PostEntity
         PostEntity::class,
         CommentEntity::class,
         MetricsSnapshotEntity::class,
+        ChannelCleanupReceipt::class,
     ],
-    version = 1,
+    version = 2,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
+    abstract fun channelCleanupDao(): ChannelCleanupDao
     abstract fun draftDao(): DraftDao
     abstract fun postDao(): PostDao
     abstract fun commentDao(): CommentDao
