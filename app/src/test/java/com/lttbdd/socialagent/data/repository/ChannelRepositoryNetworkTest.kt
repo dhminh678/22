@@ -110,8 +110,7 @@ class ChannelRepositoryNetworkTest {
     fun setUp() {
         store = Store()
         accounts = AccountStore()
-        repository = ChannelRepositoryImpl(store, accounts) { _, _ -> }
-        repository = ChannelRepositoryImpl(store, accounts).apply { elapsedRealtime = { 0L } }
+        repository = ChannelRepositoryImpl(store, accounts) { _, _ -> }.apply { elapsedRealtime = { 0L } }
         repository.linkedInBffUrl = "https://bff.example.com"
         repository.httpClient = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
             val request = chain.request()

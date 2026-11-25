@@ -11,7 +11,6 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
@@ -29,14 +28,12 @@ import com.facebook.login.LoginBehavior
 import com.facebook.login.LoginManager
 import com.facebook.login.LoginResult
 import com.lttbdd.socialagent.core.model.ChannelAccount
-import com.lttbdd.socialagent.data.model.FacebookUserToken
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookRefreshIssue
 import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.databinding.FragmentChannelBinding
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -54,9 +51,7 @@ class ChannelFragment : Fragment() {
 
     private val viewModel: ChannelViewModel by activityViewModels()
 
-    private var disconnectDialog: androidx.appcompat.app.AlertDialog? = null
     private var facebookPageDialog: androidx.appcompat.app.AlertDialog? = null
-    private var displayedFacebookPagePicker: FacebookPagePicker? = null
     private var facebookReconnectAccountId: String? = null
     private var cancelledFacebookReconnectAccountId: String? = null
     private lateinit var adapter: ChannelAdapter
@@ -67,11 +62,8 @@ class ChannelFragment : Fragment() {
 
     // Cấu hình App ID cố định trong APK. Khi có cấu hình, đăng ký ở mỗi lần tạo Fragment
     // để nhận lại kết quả đăng nhập qua CallbackManager sau khi Activity được tạo lại.
-    private val facebookLoginContract = facebookLoginManager?.createLogInActivityResultContract(facebookCallbackManager)
-    private val facebookLoginLauncher = facebookLoginContract?.let { contract ->
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            viewModel.dispatchFacebookSdkResult { contract.parseResult(result.resultCode, result.data) }
-        }
+    private val facebookLoginLauncher = facebookLoginManager?.let { manager ->
+        registerForActivityResult(manager.createLogInActivityResultContract(facebookCallbackManager)) { }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -136,19 +128,6 @@ class ChannelFragment : Fragment() {
         viewModel.onChannelScreenResumed()
     }
 
-    private fun launchFacebookLogin(useAnotherAccount: Boolean = false) {
-        val contract = facebookLoginContract ?: return
-        val launcher = facebookLoginLauncher ?: return
-        if (!viewModel.beginFacebookSdkLogin()) return
-        try {
-            // Đăng xuất phiên SDK trước khi yêu cầu đổi tài khoản.
-            if (useAnotherAccount) facebookLoginManager?.logOut()
-            launcher.launch(contract.createIntent(requireContext(), FACEBOOK_PERMISSIONS))
-        } catch (_: ActivityNotFoundException) {
-            viewModel.onFacebookLoginFailed()
-        } catch (_: FacebookException) {
-            viewModel.onFacebookLoginFailed()
-        }
     private fun loginWithAnotherFacebookAccount() {
         // Đăng xuất phiên SDK để màn Facebook Login không tự dùng lại tài khoản cũ.
         facebookReconnectAccountId = cancelledFacebookReconnectAccountId
@@ -172,7 +151,7 @@ class ChannelFragment : Fragment() {
             .setTitle(R.string.channel_facebook_cancel_title)
             .setMessage(R.string.channel_facebook_cancel_message)
             .setPositiveButton(R.string.channel_facebook_login_another) { _, _ ->
-                launchFacebookLogin(useAnotherAccount = true)
+                loginWithAnotherFacebookAccount()
             }
             .setNegativeButton(R.string.channel_close, null)
             .setOnDismissListener { cancelledFacebookReconnectAccountId = null }
@@ -186,7 +165,6 @@ class ChannelFragment : Fragment() {
             },
             getTasksForAccount = { account -> viewModel.getTasksForAccount(account) },
             isFacebookProfile = viewModel::isFacebookProfile,
-            onDisconnect = ::confirmDisconnect,
             reconnect = ::reconnectAccount,
             needsFacebookReconnect = viewModel::needsFacebookReconnect,
             facebookPageAccessIssue = viewModel::facebookPageAccessIssue,
@@ -198,19 +176,6 @@ class ChannelFragment : Fragment() {
         binding.rvChannels.adapter = adapter
     }
 
-    private fun confirmDisconnect(account: ChannelAccount) {
-        if (!viewModel.canDisconnectChannel(account) || disconnectDialog?.isShowing == true) return
-        val message = if (viewModel.disconnectDeletesSharedData(account)) {
-            R.string.channel_disconnect_last_message
-        } else {
-            R.string.channel_disconnect_message
-        }
-        disconnectDialog = MaterialAlertDialogBuilder(requireContext())
-            .setTitle(getString(R.string.channel_disconnect_title, account.displayName))
-            .setMessage(message)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.channel_disconnect) { _, _ -> viewModel.disconnectChannel(account) }
-            .show()
     private fun retryFacebookPage(account: ChannelAccount) {
         if (!viewModel.canRetryFacebookPage(account)) return
         val current = currentFacebookSdkToken()
@@ -256,14 +221,13 @@ class ChannelFragment : Fragment() {
 
     private fun setupListeners() {
         binding.btnRetryLoadChannels.setOnClickListener { viewModel.retryLoadChannels() }
-        binding.btnRetryDisconnectCleanup.setOnClickListener { viewModel.retryDisconnectCleanup() }
         binding.btnConnectFacebook.setOnClickListener {
             facebookReconnectAccountId = null
             if (facebookLoginLauncher == null) {
                 showDemoModeNotice("FACEBOOK_APP_ID")
                 viewModel.connectFacebookDemo(getString(R.string.channel_demo_facebook_name))
             } else {
-                launchFacebookLogin()
+                facebookLoginLauncher.launch(FACEBOOK_PERMISSIONS)
             }
         }
 
@@ -291,7 +255,9 @@ class ChannelFragment : Fragment() {
                 launch { monitorTokenExpiry() }
                 launch { viewModel.facebookRefreshIssues.collect(::renderFacebookRefreshIssues) }
                 launch {
-                    viewModel.pagePicker.collect(::renderFacebookPagePicker)
+                    viewModel.pagePicker.collect { picker ->
+                        picker?.let { showFacebookPagePicker(it.pages) }
+                    }
                 }
                 launch {
                     viewModel.connectedEvents.collect { name ->
@@ -312,14 +278,11 @@ class ChannelFragment : Fragment() {
                         }
                     }
                 }
-                combine(viewModel.uiState, viewModel.hasPendingDisconnectCleanup) { state, pendingCleanup ->
-                    state to pendingCleanup
-                }.collect { (state, pendingCleanup) -> render(state, pendingCleanup) }
+                viewModel.uiState.collect(::render)
             }
         }
     }
 
-    private fun render(state: ChannelUiState, pendingCleanup: Boolean) {
     private suspend fun monitorTokenExpiry() {
         val context = requireContext()
         val receiver = object : BroadcastReceiver() {
@@ -359,46 +322,34 @@ class ChannelFragment : Fragment() {
 
     private fun render(state: ChannelUiState) {
         val loadFailed = state == ChannelUiState.LoadFailed
-        val loading = state is ChannelUiState.Loading
-        val canRetryCleanup = !loading && pendingCleanup
-        binding.progressBar.visibility = if (loading) View.VISIBLE else View.GONE
+        binding.progressBar.visibility = if (state is ChannelUiState.Loading) View.VISIBLE else View.GONE
         binding.btnRetryLoadChannels.visibility = if (loadFailed) View.VISIBLE else View.GONE
-        binding.btnRetryDisconnectCleanup.visibility = if (canRetryCleanup) View.VISIBLE else View.GONE
-        val canConnect = state is ChannelUiState.Success && !pendingCleanup
-        binding.btnConnectFacebook.isEnabled = canConnect
-        binding.btnConnectLinkedIn.isEnabled = canConnect
+        binding.btnConnectFacebook.isEnabled = state is ChannelUiState.Success
+        binding.btnConnectLinkedIn.isEnabled = state is ChannelUiState.Success
         binding.tvEmptyState.setText(if (loadFailed) R.string.channel_error_load_failed else R.string.channel_empty_desc)
         binding.tvEmptyState.visibility = if (loadFailed || (state is ChannelUiState.Success && state.channels.isEmpty())) {
             View.VISIBLE
         } else {
             View.GONE
         }
-        val channels = when (state) {
-            is ChannelUiState.Loading -> state.channels
-            is ChannelUiState.Success -> state.channels
-            ChannelUiState.LoadFailed -> emptyList()
-        }
-        // Quyền và Page task có thể đổi khi bản ghi tài khoản vẫn giống nhau.
-        adapter.submitList(channels) {
-            adapter.notifyItemRangeChanged(0, adapter.itemCount)
+        if (state is ChannelUiState.Success) {
+            // Quyền và Page task có thể đổi khi bản ghi tài khoản vẫn giống nhau.
+            adapter.submitList(state.channels) {
+                adapter.notifyItemRangeChanged(0, adapter.itemCount)
+            }
         }
     }
 
-    /** Đóng hộp thoại khi lượt đăng nhập kết thúc hoặc được thay thế. */
-    private fun renderFacebookPagePicker(picker: FacebookPagePicker?) {
-        if (picker === displayedFacebookPagePicker && facebookPageDialog?.isShowing == true) return
-        facebookPageDialog?.dismiss()
-        facebookPageDialog = null
-        displayedFacebookPagePicker = picker
-        if (picker == null) return
-
+    /** Hộp thoại chọn Page; không mở trùng khi màn hình quay lại STARTED. */
+    private fun showFacebookPagePicker(pages: List<FacebookPage>) {
+        if (facebookPageDialog?.isShowing == true) return
         facebookPageDialog = MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.channel_facebook_pick_page_title)
-            .setItems(picker.pages.map { it.name }.toTypedArray()) { _, which ->
-                viewModel.selectFacebookPage(picker, which)
+            .setItems(pages.map { it.name }.toTypedArray()) { _, which ->
+                viewModel.selectFacebookPage(pages[which])
             }
-            .setNegativeButton(R.string.channel_close) { _, _ -> viewModel.cancelFacebookPagePicker(picker) }
-            .setOnCancelListener { viewModel.cancelFacebookPagePicker(picker) }
+            .setNegativeButton(R.string.channel_close) { _, _ -> viewModel.cancelFacebookPagePicker() }
+            .setOnCancelListener { viewModel.cancelFacebookPagePicker() }
             .show()
     }
 
@@ -423,9 +374,8 @@ class ChannelFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         // dismiss() không gọi onCancel nên lựa chọn Page vẫn được giữ trong ViewModel.
-        disconnectDialog?.dismiss()
-        disconnectDialog = null
-        renderFacebookPagePicker(null)
+        facebookPageDialog?.dismiss()
+        facebookPageDialog = null
         _binding = null
     }
 

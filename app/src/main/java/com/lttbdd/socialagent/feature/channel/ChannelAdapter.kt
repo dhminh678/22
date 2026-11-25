@@ -20,7 +20,6 @@ class ChannelAdapter(
     private val getScopeForAccount: (ChannelAccount) -> String?,
     private val getTasksForAccount: (ChannelAccount) -> List<String>? = { null },
     private val isFacebookProfile: (ChannelAccount) -> Boolean? = { null },
-    private val onDisconnect: (ChannelAccount) -> Unit,
     private val reconnect: (ChannelAccount) -> Unit,
     private val needsFacebookReconnect: (ChannelAccount) -> Boolean,
     private val facebookPageAccessIssue: (ChannelAccount) -> FacebookPageAccessIssue?,
@@ -35,7 +34,6 @@ class ChannelAdapter(
             parent,
             false,
         )
-        return ChannelViewHolder(binding, getScopeForAccount, getTasksForAccount, isFacebookProfile, onDisconnect)
         return ChannelViewHolder(
             binding, getScopeForAccount, getTasksForAccount, isFacebookProfile, reconnect,
             needsFacebookReconnect, facebookPageAccessIssue, isFacebookPageUnlisted, canRetryFacebookPage, retryFacebookPage,
@@ -51,7 +49,6 @@ class ChannelAdapter(
         private val getScopeForAccount: (ChannelAccount) -> String?,
         private val getTasksForAccount: (ChannelAccount) -> List<String>?,
         private val isFacebookProfile: (ChannelAccount) -> Boolean?,
-        private val onDisconnect: (ChannelAccount) -> Unit,
         private val reconnect: (ChannelAccount) -> Unit,
         private val needsFacebookReconnect: (ChannelAccount) -> Boolean,
         private val facebookPageAccessIssue: (ChannelAccount) -> FacebookPageAccessIssue?,
@@ -69,7 +66,6 @@ class ChannelAdapter(
                 },
             )
             binding.tvDisplayName.text = account.displayName
-            binding.btnDisconnect.setOnClickListener { onDisconnect(account) }
 
             val needsReconnect = needsFacebookReconnect(account)
             val pageAccessIssue = facebookPageAccessIssue(account)

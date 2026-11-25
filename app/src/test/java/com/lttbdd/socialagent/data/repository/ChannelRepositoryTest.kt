@@ -136,7 +136,6 @@ class ChannelRepositoryTest {
         fakeTokenStore = FakeTokenStore()
         fakeAccountStore = FakeAccountStore()
         repository = newRepository()
-        repository = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore).apply { elapsedRealtime = { 0L } }
     }
 
     private fun newRepository() =
@@ -154,7 +153,7 @@ class ChannelRepositoryTest {
                 if (facebookSignOutFailure) throw IllegalStateException("Đăng xuất Facebook SDK lỗi")
                 facebookSdkLoggedIn = false
             }
-        })
+        }).apply { elapsedRealtime = { 0L } }
 
     @Test
     fun recoveredTokenAppearsInFirstChannelList() = runTest {
@@ -511,7 +510,7 @@ class ChannelRepositoryTest {
     fun `mo lai app khoi phuc kenh con token`() = runTest {
         fakeAccountStore.saved = listOf(StoredChannelAccount(ChannelType.FACEBOOK, "p1", "Page Mot"))
         fakeTokenStore.saveToken(ChannelType.FACEBOOK, "p1", OAuthToken("t", 10L, "pages_show_list"))
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
 
         val channels = restarted.getConnectedChannels().first()
 
@@ -609,7 +608,7 @@ class ChannelRepositoryTest {
 
         assertEquals(ChannelError.CHANNELS_SAVE_FAILED, (result.exceptionOrNull() as ChannelException).error)
         assertEquals("new", fakeTokenStore.stagedToken?.accessToken)
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
         assertEquals("Tên cũ", restarted.getConnectedChannels().first().single().displayName)
         assertNull(restarted.getTokenExpiresAt(type, "p1"))
         assertEquals("pages_show_list", restarted.getGrantedScope(type, "p1"))
@@ -646,7 +645,7 @@ class ChannelRepositoryTest {
 
         assertTrue(result.isSuccess)
         assertEquals("old", fakeTokenStore.storage["FACEBOOK_p1"]?.accessToken)
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
         assertEquals("Tên mới", restarted.getConnectedChannels().first().single().displayName)
         assertNull(restarted.getTokenExpiresAt(type, "p1"))
         assertEquals(20L, fakeTokenStore.stagedToken?.facebookUserSessionExpiresAt)
@@ -667,7 +666,7 @@ class ChannelRepositoryTest {
         repository.connectFacebookSelectedPage(user, FacebookPage("b", "B", "token-b")).getOrThrow()
         repository.disconnectChannel(type, "b").getOrThrow()
 
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
         assertEquals("a", restarted.getConnectedChannels().first().single().accountId)
         assertNull(restarted.getTokenExpiresAt(type, "a"))
         assertEquals(20L, fakeTokenStore.stagedToken?.facebookUserSessionExpiresAt)
@@ -687,9 +686,7 @@ class ChannelRepositoryTest {
         repository.connectFacebookSelectedPage(
             FacebookUserToken("user", 40L, null), FacebookPage("p1", "Page", "fresh"),
         ).getOrThrow()
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
-        assertEquals(40L, restarted.getTokenExpiresAt(type, "p1"))
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore)
+        val restarted = newRepository().apply { elapsedRealtime = { 0L } }
         assertNull(restarted.getTokenExpiresAt(type, "p1"))
         assertEquals(40L, fakeTokenStore.storage["FACEBOOK_p1"]?.facebookUserSessionExpiresAt)
         assertEquals("fresh", fakeTokenStore.storage["FACEBOOK_p1"]?.accessToken)
@@ -711,7 +708,7 @@ class ChannelRepositoryTest {
 
         fakeTokenStore.unreadableStagedFor = null
         fakeTokenStore.failFinishFor = null
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
         assertEquals(setOf("a", "b"), restarted.getConnectedChannels().first().map { it.accountId }.toSet())
         assertNull(restarted.getTokenExpiresAt(type, "a"))
         assertEquals("new-a", fakeTokenStore.storage["FACEBOOK_a"]?.accessToken)
@@ -730,7 +727,7 @@ class ChannelRepositoryTest {
         assertTrue(fakeTokenStore.staged.keys.single().disconnect)
         assertTrue(fakeTokenStore.storage.isEmpty())
 
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
         assertTrue(restarted.getConnectedChannels().first().isEmpty())
         assertTrue(fakeTokenStore.staged.keys.single().disconnect)
         fakeAccountStore.saveError = false
@@ -743,7 +740,7 @@ class ChannelRepositoryTest {
     @Test
     fun `tai khoan mat token thi khong khoi phuc`() = runTest {
         fakeAccountStore.saved = listOf(StoredChannelAccount(ChannelType.LINKEDIN, "li1", "Nguoi Dung"))
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = newRepository()
 
         assertTrue(restarted.getConnectedChannels().first().isEmpty())
     }
@@ -978,7 +975,7 @@ class ChannelRepositoryTest {
             assertEquals(pendingWrite.id, operationId)
             if (cleanupFailure) throw IOException("Xoá dữ liệu lỗi")
             clearedChannels.add(channel)
-        }
+        }.apply { elapsedRealtime = { 0L } }
         assertTrue(restarted.getConnectedChannels().first().isEmpty())
         assertTrue(restarted.hasPendingDisconnectCleanup.value)
 
@@ -1003,7 +1000,7 @@ class ChannelRepositoryTest {
         val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
             assertEquals(disconnect.id, operationId)
             clearedChannels.add(channel)
-        }
+        }.apply { elapsedRealtime = { 0L } }
 
         val load = runCatching { restarted.getConnectedChannels().first() }
 
@@ -1025,7 +1022,7 @@ class ChannelRepositoryTest {
         val cleanupAttempts = mutableListOf<Pair<ChannelType, String>>()
         val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
             cleanupAttempts.add(channel to operationId)
-        }
+        }.apply { elapsedRealtime = { 0L } }
 
         val load = runCatching { restarted.getConnectedChannels().first() }
 
@@ -1059,7 +1056,7 @@ class ChannelRepositoryTest {
         val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
             assertEquals(disconnect.id, operationId)
             clearedChannels.add(channel)
-        }
+        }.apply { elapsedRealtime = { 0L } }
 
         assertTrue(restarted.retryPendingDisconnectCleanup())
 
