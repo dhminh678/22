@@ -26,6 +26,7 @@ class ChannelAdapter(
     private val isFacebookPageUnlisted: (ChannelAccount) -> Boolean,
     private val canRetryFacebookPage: (ChannelAccount) -> Boolean,
     private val retryFacebookPage: (ChannelAccount) -> Unit,
+    private val onDisconnect: (ChannelAccount) -> Unit,
 ) : ListAdapter<ChannelAccount, ChannelAdapter.ChannelViewHolder>(ChannelDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChannelViewHolder {
@@ -37,6 +38,7 @@ class ChannelAdapter(
         return ChannelViewHolder(
             binding, getScopeForAccount, getTasksForAccount, isFacebookProfile, reconnect,
             needsFacebookReconnect, facebookPageAccessIssue, isFacebookPageUnlisted, canRetryFacebookPage, retryFacebookPage,
+            onDisconnect,
         )
     }
 
@@ -55,6 +57,7 @@ class ChannelAdapter(
         private val isFacebookPageUnlisted: (ChannelAccount) -> Boolean,
         private val canRetryFacebookPage: (ChannelAccount) -> Boolean,
         private val retryFacebookPage: (ChannelAccount) -> Unit,
+        private val onDisconnect: (ChannelAccount) -> Unit,
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(account: ChannelAccount) {
@@ -85,6 +88,7 @@ class ChannelAdapter(
             binding.btnReconnect.setOnClickListener { reconnect(account) }
             binding.btnRetryFacebookPage.isVisible = canRetryFacebookPage(account)
             binding.btnRetryFacebookPage.setOnClickListener { retryFacebookPage(account) }
+            binding.btnDisconnect.setOnClickListener { onDisconnect(account) }
             binding.tvStatus.setTextColor(
                 ContextCompat.getColor(
                     context,

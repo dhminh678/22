@@ -38,6 +38,7 @@ class ChannelAdapterTest {
             isFacebookPageUnlisted = { false },
             canRetryFacebookPage = { false },
             retryFacebookPage = {},
+            onDisconnect = {},
         )
         val holder = adapter.onCreateViewHolder(FrameLayout(context), 0)
         val binding = ItemChannelAccountBinding.bind(holder.itemView)
@@ -62,5 +63,33 @@ class ChannelAdapterTest {
                 assertEquals(context.getString(expectedStatus), row.tvCapStatus.text.toString())
             }
         }
+    }
+
+    @Test
+    fun disconnectButtonUsesTheCurrentAccountAfterRebinding() {
+        val context = ContextThemeWrapper(
+            ApplicationProvider.getApplicationContext<Application>(),
+            R.style.Theme_SocialAgent,
+        )
+        val first = ChannelAccount(ChannelType.FACEBOOK, "first", "First", ConnectionStatus.CONNECTED, emptySet())
+        val second = first.copy(accountId = "second", displayName = "Second")
+        val disconnected = mutableListOf<ChannelAccount>()
+        val adapter = ChannelAdapter(
+            getScopeForAccount = { null },
+            reconnect = {},
+            needsFacebookReconnect = { false },
+            facebookPageAccessIssue = { null },
+            isFacebookPageUnlisted = { false },
+            canRetryFacebookPage = { false },
+            retryFacebookPage = {},
+            onDisconnect = { disconnected.add(it) },
+        )
+        val holder = adapter.onCreateViewHolder(FrameLayout(context), 0)
+        holder.bind(first)
+        holder.bind(second)
+
+        ItemChannelAccountBinding.bind(holder.itemView).btnDisconnect.performClick()
+
+        assertEquals(listOf(second), disconnected)
     }
 }

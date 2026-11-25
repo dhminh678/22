@@ -1570,6 +1570,22 @@ class ChannelViewModelTest {
     }
 
     @Test
+    fun disconnectAcceptsAnAccountDisplayedWithAnExpiredToken() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
+        fakeRepository.expiresAt = 1_000L
+        viewModel.clock = { 2_000L }
+        connectWithFacebookToken()
+        val account = (viewModel.uiState.value as ChannelUiState.Success).channels.single()
+        assertEquals(ConnectionStatus.TOKEN_EXPIRED, account.status)
+
+        viewModel.disconnectChannel(account)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf(ChannelType.FACEBOOK to "a"), fakeRepository.disconnects)
+        assertTrue((viewModel.uiState.value as ChannelUiState.Success).channels.isEmpty())
+    }
+
+    @Test
     fun disconnectFailureKeepsTheChannelVisibleAndReportsFailure() = runTest {
         fakeRepository.pages = listOf(FacebookPage("a", "Page A", "page-token"))
         connectWithFacebookToken()

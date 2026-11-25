@@ -275,7 +275,8 @@ class ChannelViewModel @Inject constructor(
     internal fun canDisconnectChannel(account: ChannelAccount): Boolean =
         channelListLoadState == ChannelListLoadState.LOADED &&
             disconnectingChannelType == null && !retryingDisconnectCleanup &&
-            (account in knownChannels || account in demoChannels)
+            (knownChannels.any { it.type == account.type && it.accountId == account.accountId } ||
+                account in demoChannels)
 
     fun disconnectChannel(account: ChannelAccount) {
         if (!canDisconnectChannel(account)) return
@@ -551,9 +552,9 @@ class ChannelViewModel @Inject constructor(
             val verifier = PkceUtil.generateCodeVerifier()
             val state = PkceUtil.generateState()
             // BFF trên gói free có thể đang ngủ và mất tới ~1 phút để dậy: hiện tiến trình thay vì im lặng.
-            _uiState.value = ChannelUiState.Loading()
-            val registered = repository.startLinkedInSession(state, PkceUtil.generateCodeChallengeS256(verifier))
-            publishChannels()
+            val registered = withOAuthLoading {
+                repository.startLinkedInSession(state, PkceUtil.generateCodeChallengeS256(verifier))
+            }
             if (registered.isFailure) {
                 _notices.trySend(ChannelNotice.LINKEDIN_LOGIN_FAILED)
                 return@launch
