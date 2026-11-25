@@ -59,12 +59,25 @@
         <action
             android:id="@+id/action_settings_to_channels"
             app:destination="@id/channelFragment" />
+        <action
+            android:id="@+id/action_settings_to_model_selection"
+            app:destination="@id/modelSelectionFragment" />
     </fragment>
 
     <fragment
         android:id="@+id/apiKeysFragment"
         android:name="com.lttbdd.socialagent.feature.apikeys.ApiKeysFragment"
         android:label="@string/api_keys_title" />
+
+    <!-- Chọn model theo loại việc (F8, #54) mở từ Cài đặt. -->
+    <fragment
+        android:id="@+id/modelSelectionFragment"
+        android:name="com.lttbdd.socialagent.feature.models.ModelSelectionFragment"
+        android:label="@string/models_title">
+        <action
+            android:id="@+id/action_model_selection_to_api_keys"
+            app:destination="@id/apiKeysFragment" />
+    </fragment>
 
     <!-- Kênh của tôi (B, F1) mở từ Cài đặt. -->
     <fragment

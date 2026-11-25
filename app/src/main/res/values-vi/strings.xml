@@ -186,6 +186,41 @@
     <string name="api_keys_settings_description">Thêm, kiểm tra, thay thế hoặc xóa key OpenAI và Gemini của bạn. Key được mã hóa và chỉ lưu trên thiết bị này.</string>
     <string name="api_keys_settings_manage">Quản lý API key</string>
 
+    <!-- Chọn model theo loại việc, Issue #54. -->
+    <string name="models_title">Model theo loại việc</string>
+    <string name="models_description">Chọn nhà cung cấp và model cho từng loại việc. Chỉ chọn được nhà cung cấp đã lưu API key, và ứng dụng không tự chuyển sang nhà cung cấp khác.</string>
+    <string name="models_manage_keys">Quản lý API key</string>
+    <string name="models_loading">Đang tải cấu hình model…</string>
+    <string name="models_load_failed">Không thể tải cấu hình model. Mở lại màn hình này để thử lại.</string>
+    <string name="models_task_write_post">Viết bài</string>
+    <string name="models_task_write_post_description">Soạn bản nháp, viết lại và gợi ý câu trả lời.</string>
+    <string name="models_task_classify">Phân loại comment</string>
+    <string name="models_task_classify_description">Phân comment thành câu hỏi, khen, góp ý, tiêu cực và spam.</string>
+    <string name="models_task_image">Sinh ảnh</string>
+    <string name="models_task_image_description">Ảnh minh họa cho bài viết. Model ảnh có thể tốn phí cao hơn và cần được cấp quyền trên tài khoản của bạn.</string>
+    <string name="models_model_label">Model</string>
+    <string name="models_model_help">Chọn một gợi ý hoặc nhập model ID. Quyền dùng model phụ thuộc tài khoản của bạn.</string>
+    <string name="models_save">Lưu lựa chọn</string>
+    <string name="models_reset">Dùng mặc định</string>
+    <string name="models_status_ready">Sẵn sàng: %1$s / %2$s</string>
+    <string name="models_status_ready_default">Sẵn sàng (mặc định): %1$s / %2$s</string>
+    <string name="models_status_needs_key">Cần API key: hãy thêm key %1$s hoặc chọn nhà cung cấp khác. Chưa có yêu cầu nào được gửi đi.</string>
+    <string name="models_status_not_selected">Chưa chọn model. Ứng dụng sẽ dùng template ảnh offline.</string>
+    <string name="models_status_invalid">Model đã lưu không hợp lệ cho loại việc này. Hãy chọn model khác.</string>
+    <string name="models_msg_saved">Đã lưu lựa chọn.</string>
+    <string name="models_msg_saved_warning">Đã lưu, nhưng tên model này không giống model dùng cho loại việc này. Hãy kiểm tra tài khoản của bạn có dùng được không.</string>
+    <string name="models_msg_reset">Đã đặt lại về mặc định.</string>
+    <string name="models_msg_missing_key">Nhà cung cấp này chưa có API key. Hãy thêm key trong phần API key trước.</string>
+    <string name="models_msg_empty">Nhập model ID.</string>
+    <string name="models_msg_too_long">Model ID quá dài (tối đa 128 ký tự).</string>
+    <string name="models_msg_invalid_format">Model ID chỉ được chứa chữ cái, chữ số và . _ : / -</string>
+    <string name="models_msg_incompatible">Model này không dùng được cho loại việc này.</string>
+    <string name="models_msg_unsupported_provider">Nhà cung cấp này chưa được hỗ trợ.</string>
+    <string name="models_msg_error">Không thể hoàn tất thao tác. Hãy thử lại.</string>
+    <!-- Mục chọn model trong màn Cài đặt. -->
+    <string name="models_settings_description">Chọn model dùng để viết bài, phân loại comment và sinh ảnh.</string>
+    <string name="models_settings_manage">Chọn model</string>
+
     <!-- Feature F3: Topic Input -->
     <string name="compose_header_title">Tạo bài viết mới</string>
     <string name="compose_header_subtitle">Cung cấp thông tin brief để AI agent bắt đầu</string>

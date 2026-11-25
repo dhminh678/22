@@ -188,6 +188,41 @@
     <string name="api_keys_settings_description">Add, check, replace or delete your own OpenAI and Gemini keys. Keys are encrypted and stored only on this device.</string>
     <string name="api_keys_settings_manage">Manage API keys</string>
 
+    <!-- Chọn model theo loại việc, Issue #54. -->
+    <string name="models_title">Models by task</string>
+    <string name="models_description">Choose the provider and model for each kind of work. Only providers with a saved API key can be selected, and the app never switches provider on its own.</string>
+    <string name="models_manage_keys">Manage API keys</string>
+    <string name="models_loading">Loading model settings…</string>
+    <string name="models_load_failed">Could not load model settings. Reopen this screen to retry.</string>
+    <string name="models_task_write_post">Write posts</string>
+    <string name="models_task_write_post_description">Drafts, rewrites and suggested replies.</string>
+    <string name="models_task_classify">Classify comments</string>
+    <string name="models_task_classify_description">Sorts comments into question, praise, feedback, negative and spam.</string>
+    <string name="models_task_image">Generate images</string>
+    <string name="models_task_image_description">Illustrations for posts. Image models can cost more and need access on your account.</string>
+    <string name="models_model_label">Model</string>
+    <string name="models_model_help">Pick a suggestion or type a model ID. Access depends on your account.</string>
+    <string name="models_save">Save selection</string>
+    <string name="models_reset">Use default</string>
+    <string name="models_status_ready">Ready: %1$s / %2$s</string>
+    <string name="models_status_ready_default">Ready (default): %1$s / %2$s</string>
+    <string name="models_status_needs_key">Needs an API key: add a %1$s key or choose another provider. Nothing is sent until then.</string>
+    <string name="models_status_not_selected">No model selected. The app will use offline image templates.</string>
+    <string name="models_status_invalid">The saved model is not valid for this task. Choose another model.</string>
+    <string name="models_msg_saved">Selection saved.</string>
+    <string name="models_msg_saved_warning">Saved, but this model name does not look like a model for this kind of work. Check that it works with your account.</string>
+    <string name="models_msg_reset">Reset to default.</string>
+    <string name="models_msg_missing_key">This provider has no API key yet. Add one in API keys first.</string>
+    <string name="models_msg_empty">Enter a model ID.</string>
+    <string name="models_msg_too_long">Model ID is too long (at most 128 characters).</string>
+    <string name="models_msg_invalid_format">Model ID may contain only letters, digits and . _ : / -</string>
+    <string name="models_msg_incompatible">This model cannot be used for this kind of work.</string>
+    <string name="models_msg_unsupported_provider">This provider is not supported yet.</string>
+    <string name="models_msg_error">The operation could not be completed. Retry.</string>
+    <!-- Mục chọn model trong màn Cài đặt. -->
+    <string name="models_settings_description">Choose which model writes posts, classifies comments and generates images.</string>
+    <string name="models_settings_manage">Choose models</string>
+
     <!-- Feature F3: Topic Input -->
     <string name="compose_header_title">Create New Post</string>
     <string name="compose_header_subtitle">Provide a brief to guide the AI agent</string>
