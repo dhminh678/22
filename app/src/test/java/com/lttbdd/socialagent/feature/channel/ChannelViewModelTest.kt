@@ -478,6 +478,33 @@ class ChannelViewModelTest {
     }
 
     @Test
+    fun facebookShowsMissingPageWarningAndClearsItWhenPageReturnsUnchanged() = runTest {
+        fakeRepository.pages = listOf(FacebookPage("p1", "Page", "page-token"))
+        fakeRepository.expiresAt = 1_000L
+        viewModel.clock = { 0L }
+        connectWithFacebookToken()
+        fakeRepository.facebookRefreshOutcome = FacebookRefreshOutcome(
+            issues = setOf(FacebookRefreshIssue.PAGE_NOT_RETURNED),
+            issuesByAccountId = mapOf("p1" to FacebookRefreshIssue.PAGE_NOT_RETURNED),
+        )
+
+        val first = viewModel.refreshFacebookIfNeeded("owner") { user(Long.MAX_VALUE).copy(userId = "owner") }
+        val state = viewModel.uiState.value as ChannelUiState.Success
+        assertEquals(setOf("p1"), state.unlistedFacebookPageIds)
+        assertTrue(state.facebookReconnectIds.isEmpty())
+        assertEquals(ConnectionStatus.CONNECTED, state.channels.single().status)
+        assertTrue(viewModel.isFacebookPageUnlisted(state.channels.single()))
+
+        testScheduler.advanceTimeBy(first.nextCheckMillis)
+        fakeRepository.facebookRefreshOutcome = FacebookRefreshOutcome(
+            skipped = FacebookRefreshSkip.NO_CHANGES,
+            confirmedPageIds = setOf("p1"),
+        )
+        viewModel.refreshFacebookIfNeeded("owner") { user(Long.MAX_VALUE).copy(userId = "owner") }
+        assertTrue((viewModel.uiState.value as ChannelUiState.Success).unlistedFacebookPageIds.isEmpty())
+    }
+
+    @Test
     fun leavingForegroundCancelsSdkWaitAndNextResumeRefreshesTheSameSession() = runTest {
         fakeRepository.pages = listOf(FacebookPage("p1", "Page", "page-token"))
         fakeRepository.expiresAt = 1_000L

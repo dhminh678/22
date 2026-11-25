@@ -31,6 +31,7 @@ import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookRefreshIssue
+import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.databinding.FragmentChannelBinding
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -167,9 +168,35 @@ class ChannelFragment : Fragment() {
             reconnect = ::reconnectAccount,
             needsFacebookReconnect = viewModel::needsFacebookReconnect,
             facebookPageAccessIssue = viewModel::facebookPageAccessIssue,
+            isFacebookPageUnlisted = viewModel::isFacebookPageUnlisted,
+            canRetryFacebookPage = viewModel::canRetryFacebookPage,
+            retryFacebookPage = ::retryFacebookPage,
         )
         binding.rvChannels.layoutManager = LinearLayoutManager(requireContext())
         binding.rvChannels.adapter = adapter
+    }
+
+    private fun retryFacebookPage(account: ChannelAccount) {
+        if (!viewModel.canRetryFacebookPage(account)) return
+        val current = currentFacebookSdkToken()
+        if (current == null) {
+            Toast.makeText(requireContext(), R.string.channel_retry_page_sign_in, Toast.LENGTH_SHORT).show()
+            return
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            val check = viewModel.retryFacebookPage(
+                account.accountId, current.user, current.version, ::facebookSdkSessionVersion,
+            )
+            val message = when (check.outcome.skipped) {
+                FacebookRefreshSkip.COOLDOWN -> R.string.channel_retry_page_wait
+                FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS,
+                FacebookRefreshSkip.NO_SDK_SESSION,
+                FacebookRefreshSkip.SDK_SESSION_CHANGED,
+                FacebookRefreshSkip.WAITING_FOR_SESSION -> R.string.channel_retry_page_sign_in
+                else -> null
+            }
+            message?.let { Toast.makeText(requireContext(), it, Toast.LENGTH_SHORT).show() }
+        }
     }
 
     private fun reconnectAccount(account: ChannelAccount) {
@@ -286,6 +313,7 @@ class ChannelFragment : Fragment() {
                 FacebookRefreshIssue.TIMEOUT in issues ||
                 FacebookRefreshIssue.RATE_LIMITED in issues ||
                 FacebookRefreshIssue.PROVIDER_UNAVAILABLE in issues -> R.string.channel_refresh_unavailable
+            FacebookRefreshIssue.PAGE_NOT_RETURNED in issues -> R.string.channel_refresh_page_access
             else -> null
         }
         binding.tvFacebookRefreshStatus.visibility = if (message == null) View.GONE else View.VISIBLE

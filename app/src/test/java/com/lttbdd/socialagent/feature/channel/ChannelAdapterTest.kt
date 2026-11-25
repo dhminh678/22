@@ -35,6 +35,9 @@ class ChannelAdapterTest {
             reconnect = {},
             needsFacebookReconnect = { issue == FacebookPageAccessIssue.RECONNECT_REQUIRED },
             facebookPageAccessIssue = { issue },
+            isFacebookPageUnlisted = { false },
+            canRetryFacebookPage = { false },
+            retryFacebookPage = {},
         )
         val holder = adapter.onCreateViewHolder(FrameLayout(context), 0)
         val binding = ItemChannelAccountBinding.bind(holder.itemView)

@@ -325,6 +325,8 @@ class ChannelRepositoryTest {
         assertNull(repository.getTokenExpiresAt(type, "page"))
         assertEquals(Long.MAX_VALUE, fakeTokenStore.storage["FACEBOOK_page"]?.facebookUserSessionExpiresAt)
         assertEquals("old-missing", fakeTokenStore.storage["FACEBOOK_missing"]?.accessToken)
+        assertEquals(mapOf("missing" to FacebookRefreshIssue.PAGE_NOT_RETURNED), updated.issuesByAccountId)
+        assertEquals(setOf("page"), updated.confirmedPageIds)
         assertTrue(updated.reconnectAccountIds.isEmpty())
         assertEquals("old-other", fakeTokenStore.storage["FACEBOOK_other"]?.accessToken)
         assertEquals("old-healthy", fakeTokenStore.storage["FACEBOOK_healthy"]?.accessToken)

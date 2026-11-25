@@ -46,7 +46,12 @@
     <string name="channel_refresh_storage_error">Chưa lưu được kết quả làm mới Facebook. Ứng dụng sẽ thử lại.</string>
     <string name="channel_refresh_network_error">Chưa kết nối được với Facebook để làm mới. Ứng dụng sẽ thử lại.</string>
     <string name="channel_refresh_unavailable">Chưa làm mới được kết nối Facebook. Ứng dụng sẽ thử lại.</string>
+    <string name="channel_refresh_page_access">Hãy kiểm tra quyền truy cập Facebook đối với các Trang được đánh dấu bên dưới.</string>
+    <string name="channel_retry_page">Thử làm mới Trang</string>
+    <string name="channel_retry_page_wait">Đang trong thời gian chờ. Hãy thử làm mới Trang sau.</string>
+    <string name="channel_retry_page_sign_in">Hãy đăng nhập bằng tài khoản Facebook quản lý Trang này hoặc kết nối lại.</string>
     <string name="channel_status_page_permission_required">Không có quyền truy cập Trang. Hãy kiểm tra quyền và nhiệm vụ được cấp trên Trang Facebook.</string>
+    <string name="channel_status_page_unlisted">Trang này không có trong danh sách Trang của tài khoản Facebook hiện tại. Hãy kiểm tra quyền quản lý Trang, rồi thử làm mới hoặc kết nối lại.</string>
     <string name="channel_status_reconnect_required">Cần kết nối lại</string>
     <string name="channel_status_expired">Token đã hết hạn</string>
     <string name="channel_reconnect">Kết nối lại</string>

@@ -47,7 +47,12 @@
     <string name="channel_refresh_storage_error">Could not save the Facebook refresh. The app will retry.</string>
     <string name="channel_refresh_network_error">Could not reach Facebook to refresh the connection. The app will retry.</string>
     <string name="channel_refresh_unavailable">Facebook refresh is temporarily unavailable. The app will retry.</string>
+    <string name="channel_refresh_page_access">Check Facebook Page access for the connections marked below.</string>
+    <string name="channel_retry_page">Retry Page refresh</string>
+    <string name="channel_retry_page_wait">Page refresh is on cooldown. Try again later.</string>
+    <string name="channel_retry_page_sign_in">Sign in with the Facebook account that manages this Page, or reconnect it.</string>
     <string name="channel_status_page_permission_required">Page access denied. Check your Facebook Page permissions and assigned tasks.</string>
+    <string name="channel_status_page_unlisted">This Page is missing from the current Facebook account’s Page list. Check that you have permission to manage it, then retry or reconnect.</string>
     <string name="channel_status_reconnect_required">Reconnect required</string>
     <string name="channel_status_expired">Token Expired</string>
     <string name="channel_reconnect">Reconnect</string>

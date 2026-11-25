@@ -95,6 +95,17 @@ interface ChannelRepository {
         FACEBOOK_REFRESH_RETRY,
     )
 
+    /** Thử lại một Page bằng [user] đã đọc từ phiên SDK có thế hệ [version]. */
+    suspend fun retryFacebookPage(
+        pageId: String,
+        user: FacebookUserToken,
+        version: Long,
+        sessionVersion: () -> Long?,
+    ): FacebookRefreshCheck = FacebookRefreshCheck(
+        FacebookRefreshOutcome(skipped = FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS),
+        FACEBOOK_REFRESH_RETRY,
+    )
+
     /**
      * Lấy danh sách Facebook Page mà người dùng quản lý (Graph API `/me/accounts`).
      * Thất bại (lỗi mạng, thiếu quyền `pages_show_list`) trả về Result.failure.

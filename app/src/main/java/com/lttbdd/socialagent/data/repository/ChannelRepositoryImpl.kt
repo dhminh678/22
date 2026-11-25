@@ -172,8 +172,12 @@ class ChannelRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun fetchFacebookPages(
+    override suspend fun fetchFacebookPages(userAccessToken: String): Result<List<FacebookPage>> =
+        fetchFacebookPages(userAccessToken, targetPageId = null)
+
+    private suspend fun fetchFacebookPages(
         userAccessToken: String,
+        targetPageId: String?,
     ): Result<List<FacebookPage>> = withContext(Dispatchers.IO) {
         try {
             val accountsUrl = "$GRAPH_API_BASE_URL/me/accounts?fields=id,name,access_token,tasks&limit=100".toHttpUrl()
@@ -195,6 +199,7 @@ class ChannelRepositoryImpl @Inject constructor(
                         ?: throw facebookPagesHttpFailure(response.code, body)
                 }
                 batch.pages.forEach { page -> pages.getOrPut(page.id) { page } }
+                if (targetPageId != null && targetPageId in pages) break
                 after = batch.nextCursor
                 if (after != null && !seenCursors.add(after)) {
                     throw facebookPagesFailure(FacebookPagesFailure.PAGINATION_LOOP)
@@ -264,7 +269,7 @@ class ChannelRepositoryImpl @Inject constructor(
             val now = elapsedRealtime()
             if (lastFacebookPageAccessCheck?.let { now - it < FACEBOOK_REFRESH_RETRY } == true) return
             val candidates = try {
-                facebookCandidates { _, token -> token.isFacebookProfile == false }
+                facebookCandidates(pageId = null) { _, token -> token.isFacebookProfile == false }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -363,9 +368,25 @@ class ChannelRepositoryImpl @Inject constructor(
         facebookRefreshCoordinator.check(userId, refresh, sessionVersion) { coordinatedRefresh ->
             val owner = checkNotNull(userId)
             refreshEligibleFacebookChannels(
-                owner, sessionVersion, userToken = coordinatedRefresh,
+                owner, pageId = null, sessionVersion, userToken = coordinatedRefresh,
             ) { account, token ->
                 token.isEligibleForFacebookRefresh(account, owner, expiresBefore)
+            }
+        }.also(::logFacebookRefresh)
+
+    override suspend fun retryFacebookPage(
+        pageId: String,
+        user: FacebookUserToken,
+        version: Long,
+        sessionVersion: () -> Long?,
+    ): FacebookRefreshCheck =
+        facebookRefreshCoordinator.checkPage(user.userId, pageId, version, sessionVersion) { begin ->
+            val owner = checkNotNull(user.userId)
+            refreshEligibleFacebookChannels(
+                owner, pageId, sessionVersion, refreshSession = version,
+                userToken = { user.takeIf { begin() } },
+            ) { _, token ->
+                token.isFacebookProfile == false && token.facebookUserId == owner
             }
         }.also(::logFacebookRefresh)
 
@@ -394,12 +415,15 @@ class ChannelRepositoryImpl @Inject constructor(
     }
 
     private suspend fun facebookCandidates(
+        pageId: String?,
         isEligible: (ChannelAccount, OAuthToken) -> Boolean,
     ): List<FacebookRefreshCandidate> =
         accountsMutex.withLock {
             ensureRestored()
             val storedAccounts = accountStore.load().associateBy { it.type to it.accountId }
-            channelsFlow.value.filter { it.type == ChannelType.FACEBOOK }.mapNotNull { account ->
+            channelsFlow.value.filter {
+                it.type == ChannelType.FACEBOOK && (pageId == null || it.accountId == pageId)
+            }.mapNotNull { account ->
                 val key = account.type to account.accountId
                 val token = readToken(account.type, account.accountId, pendingWrites[key])
                 val metadata = storedAccounts[key]
@@ -410,15 +434,16 @@ class ChannelRepositoryImpl @Inject constructor(
 
     private suspend fun refreshEligibleFacebookChannels(
         userId: String,
+        pageId: String?,
         sessionVersion: () -> Long?,
+        refreshSession: Long? = sessionVersion(),
         userToken: suspend () -> FacebookUserToken?,
         isEligible: (ChannelAccount, OAuthToken) -> Boolean,
     ): FacebookRefreshOutcome {
-        val refreshSession = sessionVersion()
         val sessionChanged = FacebookRefreshOutcome(skipped = FacebookRefreshSkip.SDK_SESSION_CHANGED)
         fun isCurrent() = sessionVersion() == refreshSession
         val candidates = try {
-            facebookCandidates(isEligible)
+            facebookCandidates(pageId, isEligible)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -446,7 +471,7 @@ class ChannelRepositoryImpl @Inject constructor(
             return finishFacebookRefresh(candidates, sessionIssue = FacebookRefreshIssue.USER_SESSION_EXPIRED, sessionIsCurrent = ::isCurrent)
         }
         val pages = if (candidates.any { it.token.isFacebookProfile == false }) {
-            fetchFacebookPages(user.accessToken)
+            fetchFacebookPages(user.accessToken, targetPageId = pageId)
         } else {
             Result.success(emptyList())
         }
@@ -465,6 +490,7 @@ class ChannelRepositoryImpl @Inject constructor(
         val batchIssues = mutableSetOf<FacebookRefreshIssue>()
         val reconnect = mutableSetOf<String>()
         val issuesByAccount = mutableMapOf<String, FacebookRefreshIssue>()
+        val confirmedPages = mutableSetOf<String>()
         var sessionChanged = false
         val pagesById = pages.getOrNull().orEmpty().associateBy { it.id }
         val pagesIssue = pages.exceptionOrNull()?.let { failure ->
@@ -520,8 +546,12 @@ class ChannelRepositoryImpl @Inject constructor(
                     val next = if (previous.isFacebookProfile == true) {
                         previous.copy(accessToken = user.accessToken, expiresAt = user.expiresAtMillis, facebookUserId = user.userId)
                     } else {
-                        // Page không còn trong /me/accounts thì giữ nguyên, không đoán nguyên nhân.
-                        val page = pagesById[account.accountId] ?: continue
+                        val page = pagesById[account.accountId]
+                        if (page == null) {
+                            issuesByAccount[account.accountId] = FacebookRefreshIssue.PAGE_NOT_RETURNED
+                            continue
+                        }
+                        confirmedPages.add(account.accountId)
                         previous.copy(
                             accessToken = page.accessToken,
                             // /me/accounts không cung cấp hạn đã xác minh cho Page token.
@@ -565,6 +595,11 @@ class ChannelRepositoryImpl @Inject constructor(
             skipped = skipped,
             issuesByAccountId = issuesByAccount,
             batchIssues = batchIssues,
+            confirmedPageIds = confirmedPages,
+            retryablePageIds = candidates.asSequence().filter { candidate ->
+                candidate.token.isFacebookProfile == false &&
+                    issuesByAccount[candidate.account.accountId] in pageRetryIssues
+            }.map { it.account.accountId }.toSet(),
         )
     }
 
@@ -865,6 +900,15 @@ class ChannelRepositoryImpl @Inject constructor(
         private val refreshLogger = Logger.getLogger("FacebookTokenRefresh")
         private val refreshLogSalt = UUID.randomUUID().toString()
         private val facebookRateLimitCodes = setOf(4, 17, 32, 613)
+        private val pageRetryIssues = setOf(
+            FacebookRefreshIssue.PAGE_NOT_RETURNED,
+            FacebookRefreshIssue.PAGES_UNAVAILABLE,
+            FacebookRefreshIssue.STORAGE,
+            FacebookRefreshIssue.NETWORK,
+            FacebookRefreshIssue.TIMEOUT,
+            FacebookRefreshIssue.RATE_LIMITED,
+            FacebookRefreshIssue.PROVIDER_UNAVAILABLE,
+        )
         private val json = Json { ignoreUnknownKeys = true }
 
         private val ALL_CAPABILITIES = setOf(

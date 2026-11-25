@@ -13,6 +13,8 @@ sealed interface ChannelUiState {
         val channels: List<ChannelAccount>,
         val tokenRevision: Long = 0,
         val facebookReconnectIds: Set<String> = emptySet(),
+        val unlistedFacebookPageIds: Set<String> = emptySet(),
+        val facebookRetryPageIds: Set<String> = emptySet(),
         val facebookPagePermissionIds: Set<String> = emptySet(),
     ) : ChannelUiState
 }
