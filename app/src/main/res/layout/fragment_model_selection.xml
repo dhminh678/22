@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:id="@+id/models_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/models_title"
+            android:textAppearance="?attr/textAppearanceHeadlineSmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/models_description" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/manage_keys_button"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/models_manage_keys" />
+
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:contentDescription="@string/models_loading"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/load_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:accessibilityLiveRegion="polite"
+            android:text="@string/models_load_failed"
+            android:visibility="gone" />
+
+        <include
+            android:id="@+id/write_post_section"
+            layout="@layout/item_task_model" />
+
+        <include
+            android:id="@+id/classify_section"
+            layout="@layout/item_task_model" />
+
+        <include
+            android:id="@+id/image_section"
+            layout="@layout/item_task_model" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

@@ -13,7 +13,11 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 object FacebookPagesParser {
 
-    fun parse(body: String): List<FacebookPage>? {
+    internal data class Batch(val pages: List<FacebookPage>, val nextCursor: String?)
+
+    fun parse(body: String): List<FacebookPage>? = parseBatch(body)?.pages
+
+    internal fun parseBatch(body: String): Batch? {
         val root = try {
             Json.parseToJsonElement(body) as? JsonObject ?: return null
         } catch (_: SerializationException) {
@@ -31,7 +35,15 @@ object FacebookPagesParser {
             }
             FacebookPage(id = id, name = name, accessToken = token, tasks = tasks)
         }.distinctBy { it.id }
-        return pages.takeIf { data.isEmpty() || it.isNotEmpty() }
+        if (data.isNotEmpty() && pages.isEmpty()) return null
+
+        val paging = root["paging"] as? JsonObject
+        val nextCursor = if (paging?.nonBlankString("next") != null) {
+            (paging["cursors"] as? JsonObject)?.nonBlankString("after") ?: return null
+        } else {
+            null
+        }
+        return Batch(pages, nextCursor)
     }
 
     private fun JsonObject.nonBlankString(key: String): String? =

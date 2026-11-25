@@ -49,8 +49,9 @@ class RoutingLlmClient(
         } ?: throw LlmException(LlmFailure.MISSING_CONFIGURATION)
         if (configuration.model.isBlank()) throw LlmException(LlmFailure.MISSING_CONFIGURATION)
         val adapter = adaptersByProvider[configuration.provider] ?: throw LlmException(LlmFailure.UNSUPPORTED_PROVIDER)
+        // Cùng quy tắc với lúc lưu lựa chọn model (LlmModelCatalog), để model đã lưu được thì gọi được.
         if (configuration.provider == LlmProvider.GEMINI &&
-            !configuration.model.removePrefix("models/").matches(Regex("[A-Za-z0-9._-]+"))
+            !LlmModelCatalog.isValidModelIdFormat(configuration.provider, configuration.model)
         ) {
             throw LlmException(LlmFailure.INVALID_REQUEST)
         }

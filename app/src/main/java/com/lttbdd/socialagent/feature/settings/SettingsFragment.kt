@@ -42,8 +42,10 @@ class SettingsFragment : Fragment() {
         ViewCompat.setAccessibilityHeading(binding.settingsTitle, true)
         ViewCompat.setAccessibilityHeading(binding.languageTitle, true)
         ViewCompat.setAccessibilityHeading(binding.apiKeysSectionTitle, true)
+        ViewCompat.setAccessibilityHeading(binding.modelsSectionTitle, true)
         ViewCompat.setAccessibilityHeading(binding.channelsSectionTitle, true)
         binding.manageApiKeys.setOnClickListener { navigateFromSettings(R.id.action_settings_to_api_keys) }
+        binding.manageModels.setOnClickListener { navigateFromSettings(R.id.action_settings_to_model_selection) }
         binding.manageChannels.setOnClickListener { navigateFromSettings(R.id.action_settings_to_channels) }
 
         viewLifecycleOwner.lifecycleScope.launch {

@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/screen_padding">
+
+        <!-- Header -->
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/tvHeaderTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/compose_header_title"
+            android:textAppearance="@style/TextAppearance.SocialAgent.Headline" />
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/tvHeaderSubtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_xsmall"
+            android:text="@string/compose_header_subtitle"
+            android:textAppearance="@style/TextAppearance.SocialAgent.Caption" />
+
+        <!-- Topic Field -->
+        <com.lttbdd.socialagent.core.ui.components.AppTextField
+            android:id="@+id/layoutTopic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing"
+            android:hint="@string/compose_topic_hint"
+            app:errorEnabled="true">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etTopic"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="3" />
+        </com.lttbdd.socialagent.core.ui.components.AppTextField>
+
+        <!-- Goal Field -->
+        <com.lttbdd.socialagent.core.ui.components.AppTextField
+            android:id="@+id/layoutGoal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_small"
+            android:hint="@string/compose_goal_hint"
+            app:errorEnabled="true">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etGoal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="3" />
+        </com.lttbdd.socialagent.core.ui.components.AppTextField>
+
+        <!-- Target Audience Field -->
+        <com.lttbdd.socialagent.core.ui.components.AppTextField
+            android:id="@+id/layoutAudience"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_small"
+            android:hint="@string/compose_audience_hint"
+            app:errorEnabled="true">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etAudience"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textCapSentences" />
+        </com.lttbdd.socialagent.core.ui.components.AppTextField>
+
+        <!-- Tone Dropdown Field -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/layoutTone"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_small"
+            android:hint="@string/compose_tone_hint"
+            app:boxCornerRadiusBottomEnd="@dimen/corner_radius_medium"
+            app:boxCornerRadiusBottomStart="@dimen/corner_radius_medium"
+            app:boxCornerRadiusTopEnd="@dimen/corner_radius_medium"
+            app:boxCornerRadiusTopStart="@dimen/corner_radius_medium"
+            app:errorEnabled="true">
+
+            <com.lttbdd.socialagent.core.ui.components.AppDropdown
+                android:id="@+id/actvTone"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Language Selection -->
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/tvLanguageTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_small"
+            android:text="@string/compose_language_title"
+            android:textAppearance="@style/TextAppearance.SocialAgent.Title" />
+
+        <RadioGroup
+            android:id="@+id/rgLanguage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_xsmall"
+            android:orientation="horizontal">
+
+            <com.lttbdd.socialagent.core.ui.components.StyledRadioButton
+                android:id="@+id/rbLanguageVi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/compose_language_vi" />
+
+            <com.lttbdd.socialagent.core.ui.components.StyledRadioButton
+                android:id="@+id/rbLanguageEn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/component_spacing"
+                android:text="@string/compose_language_en" />
+        </RadioGroup>
+
+        <!-- Target Channels Selection -->
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/tvChannelsTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing"
+            android:text="@string/compose_channels_title"
+            android:textAppearance="@style/TextAppearance.SocialAgent.Title" />
+
+        <LinearLayout
+            android:id="@+id/layoutChannelsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_xsmall"
+            android:orientation="horizontal">
+
+            <com.lttbdd.socialagent.core.ui.components.StyledCheckbox
+                android:id="@+id/cbChannelFacebook"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/compose_channel_facebook" />
+
+            <com.lttbdd.socialagent.core.ui.components.StyledCheckbox
+                android:id="@+id/cbChannelLinkedIn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/component_spacing"
+                android:text="@string/compose_channel_linkedin" />
+        </LinearLayout>
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/tvChannelsError"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_xsmall"
+            android:text="@string/compose_channels_error"
+            android:textAppearance="@style/TextAppearance.SocialAgent.Caption"
+            android:textColor="@color/brand_error"
+            android:visibility="gone" />
+
+        <!-- Continue Button -->
+        <com.lttbdd.socialagent.core.ui.components.PrimaryButton
+            android:id="@+id/btnContinue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/component_spacing_large"
+            android:layout_marginBottom="@dimen/component_spacing_large"
+            android:enabled="false"
+            android:text="@string/action_continue" />
+
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

@@ -3,14 +3,24 @@ package com.lttbdd.socialagent.data.repository
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.data.model.ChannelError
 import com.lttbdd.socialagent.data.model.ChannelException
+import com.lttbdd.socialagent.data.model.FacebookRefreshIssue
+import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.data.model.FacebookPage
+import com.lttbdd.socialagent.data.model.FacebookPageAccessIssue
+import com.lttbdd.socialagent.data.model.FACEBOOK_REFRESH_RETRY
 import com.lttbdd.socialagent.data.model.FacebookUserToken
 import com.lttbdd.socialagent.data.model.OAuthToken
 import com.lttbdd.socialagent.data.security.PendingChannelWrite
 import com.lttbdd.socialagent.data.security.TokenStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -35,7 +45,7 @@ class ChannelRepositoryNetworkTest {
 
     private class Store : TokenStore {
         val storage = mutableMapOf<String, OAuthToken>()
-        private val staged = mutableMapOf<PendingChannelWrite, OAuthToken?>()
+        private val staged = mutableMapOf<PendingChannelWrite, OAuthToken>()
         override suspend fun saveToken(channelType: ChannelType, accountId: String, token: OAuthToken) {
             storage["${channelType.name}_$accountId"] = token
         }
@@ -45,15 +55,6 @@ class ChannelRepositoryNetworkTest {
             storage.remove("${channelType.name}_$accountId")
             staged.keys.removeAll { it.type == channelType && it.accountId == accountId }
         }
-        override suspend fun stageDisconnect(write: PendingChannelWrite) {
-            removeToken(write.type, write.accountId)
-            staged[write] = null
-        }
-
-        override suspend fun completeFacebookSignOut(write: PendingChannelWrite): PendingChannelWrite {
-            error("Bộ kiểm thử mạng không có phiên SDK.")
-        }
-
         override suspend fun stageToken(write: PendingChannelWrite, token: OAuthToken) {
             check(staged.put(write, token) == null)
         }
@@ -62,13 +63,15 @@ class ChannelRepositoryNetworkTest {
 
         override suspend fun loadStagedToken(write: PendingChannelWrite) = staged[write]
 
+        override suspend fun stageDisconnect(write: PendingChannelWrite) {
+            check(staged.put(write, OAuthToken("staged", null)) == null)
+        }
+
+        override suspend fun completeFacebookSignOut(write: PendingChannelWrite): PendingChannelWrite = write
+
         override suspend fun finishPendingWrite(write: PendingChannelWrite, commit: Boolean) {
-            check(write in staged)
             val token = staged.remove(write)
-            if (commit) {
-                if (token == null) removeToken(write.type, write.accountId)
-                else saveToken(write.type, write.accountId, token)
-            }
+            if (commit && token != null) saveToken(write.type, write.accountId, token)
         }
     }
 
@@ -86,8 +89,14 @@ class ChannelRepositoryNetworkTest {
         }
     }
 
+    private class FakeChannelDataCleanup : ChannelDataCleanup {
+        override suspend fun currentFacebookSession(): String? = "fb_user_123"
+        override suspend fun clear(type: ChannelType, operationId: String) {}
+    }
+
     private lateinit var store: Store
     private lateinit var accounts: AccountStore
+    private lateinit var cleanup: FakeChannelDataCleanup
     private lateinit var repository: ChannelRepositoryImpl
     private val requests = mutableListOf<Request>()
     private val bodies = mutableListOf<String>()
@@ -100,7 +109,8 @@ class ChannelRepositoryNetworkTest {
     fun setUp() {
         store = Store()
         accounts = AccountStore()
-        repository = ChannelRepositoryImpl(store, accounts) { _, _ -> }
+        cleanup = FakeChannelDataCleanup()
+        repository = ChannelRepositoryImpl(store, accounts, cleanup).apply { elapsedRealtime = { 0L } }
         repository.linkedInBffUrl = "https://bff.example.com"
         repository.httpClient = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
             val request = chain.request()
@@ -123,6 +133,136 @@ class ChannelRepositoryNetworkTest {
     private fun failureError(result: Result<*>): ChannelError =
         (result.exceptionOrNull() as ChannelException).error
 
+    @Test
+    fun pageAccessUsesStoredTokensAndDistinguishesRevocationFromPermissions() = runTest {
+        val user = FacebookUserToken("sdk-user-token", Long.MAX_VALUE, null, "owner")
+        val subcodes = mapOf("revoked" to 458, "password" to 460, "permissions" to 492)
+        for (page in subcodes.keys + "healthy") {
+            repository.connectFacebookSelectedPage(user, FacebookPage(page, page, "token-$page")).getOrThrow()
+        }
+        handler = { request ->
+            val page = checkNotNull(request.header("Authorization")).removePrefix("Bearer token-")
+            val subcode = subcodes[page]
+            if (subcode == null) 200 to """{"id":"$page"}"""
+            else 400 to """{"error":{"code":190,"error_subcode":$subcode}}"""
+        }
+
+        repository.checkFacebookPageAccess()
+        repository.checkFacebookPageAccess()
+
+        assertEquals(
+            mapOf(
+                "revoked" to FacebookPageAccessIssue.RECONNECT_REQUIRED,
+                "password" to FacebookPageAccessIssue.RECONNECT_REQUIRED,
+                "permissions" to FacebookPageAccessIssue.PERMISSION_REQUIRED,
+            ),
+            repository.observeFacebookPageAccessIssues().first(),
+        )
+        assertEquals(4, requests.size)
+        for (request in requests) {
+            assertEquals("graph.facebook.com", request.url.host)
+            assertTrue(request.url.encodedPath.endsWith("/me"))
+            assertEquals("id", request.url.queryParameter("fields"))
+            assertNull(request.url.queryParameter("access_token"))
+        }
+        assertNull(repository.getTokenExpiresAt(ChannelType.FACEBOOK, "revoked"))
+        assertEquals("token-revoked", store.storage["FACEBOOK_revoked"]?.accessToken)
+    }
+
+    @Test
+    fun pageAccessIgnoresALateFailureAfterReconnectingTheSamePage() = runTest {
+        val user = FacebookUserToken("user", Long.MAX_VALUE, null, "owner")
+        val page = FacebookPage("page", "Page", "old")
+        repository.connectFacebookSelectedPage(user, page).getOrThrow()
+        val requested = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        handler = {
+            requested.complete(Unit)
+            runBlocking { withTimeout(5_000L) { finish.await() } }
+            400 to """{"error":{"code":190,"error_subcode":460}}"""
+        }
+        val check = async { repository.checkFacebookPageAccess() }
+        try {
+            requested.await()
+            repository.connectFacebookSelectedPage(user, page.copy(accessToken = "new")).getOrThrow()
+        } finally {
+            finish.complete(Unit)
+        }
+        check.await()
+
+        assertTrue(repository.observeFacebookPageAccessIssues().first().isEmpty())
+        assertEquals("new", store.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun pageAccessRestartsWithoutCooldownAfterCancellationMidBatch() = runTest {
+        val user = FacebookUserToken("user", Long.MAX_VALUE, null, "owner")
+        for (page in listOf("first", "second", "last")) {
+            repository.connectFacebookSelectedPage(user, FacebookPage(page, page, page)).getOrThrow()
+        }
+        val secondRequested = CompletableDeferred<Unit>()
+        val finishSecond = CompletableDeferred<Unit>()
+        handler = { request ->
+            when (request.header("Authorization")) {
+                "Bearer first" -> 200 to """{"id":"first"}"""
+                "Bearer second" -> {
+                    secondRequested.complete(Unit)
+                    runBlocking { withTimeout(5_000L) { finishSecond.await() } }
+                    200 to """{"id":"second"}"""
+                }
+                else -> 400 to """{"error":{"code":190,"error_subcode":458}}"""
+            }
+        }
+
+        val interrupted = async { repository.checkFacebookPageAccess() }
+        try {
+            secondRequested.await()
+            interrupted.cancel()
+        } finally {
+            finishSecond.complete(Unit)
+        }
+        interrupted.cancelAndJoin()
+        assertEquals(listOf("Bearer first", "Bearer second"), requests.map { it.header("Authorization") })
+
+        repository.checkFacebookPageAccess()
+
+        assertEquals("Bearer last", requests.last().header("Authorization"))
+        assertEquals(
+            mapOf("last" to FacebookPageAccessIssue.RECONNECT_REQUIRED),
+            repository.observeFacebookPageAccessIssues().first(),
+        )
+    }
+
+    @Test
+    fun pageAccessKeepsPermissionWarningOnNetworkFailureAndClearsItOnSuccess() = runTest {
+        val user = FacebookUserToken("user", Long.MAX_VALUE, null, "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "page-token")).getOrThrow()
+        var now = 0L
+        repository.elapsedRealtime = { now }
+        handler = { 400 to """{"error":{"code":190,"error_subcode":492}}""" }
+        repository.checkFacebookPageAccess()
+
+        now += FACEBOOK_REFRESH_RETRY
+        handler = { throw IOException("Mất mạng") }
+        repository.checkFacebookPageAccess()
+        assertEquals(
+            FacebookPageAccessIssue.PERMISSION_REQUIRED,
+            repository.observeFacebookPageAccessIssues().first()["page"],
+        )
+
+        now += FACEBOOK_REFRESH_RETRY
+        handler = { 200 to """{"id":"page"}""" }
+        repository.checkFacebookPageAccess()
+        assertTrue(repository.observeFacebookPageAccessIssues().first().isEmpty())
+    }
+
+    @Test
+    fun userPagesRequestDoesNotClassifySubcode492AsAnInvalidSession() = runTest {
+        handler = { 400 to """{"error":{"code":190,"error_subcode":492}}""" }
+
+        assertEquals(ChannelError.FACEBOOK_PAGES_LOAD_FAILED, failureError(repository.fetchFacebookPages("user")))
+    }
+
     // ---- Facebook: /me/accounts ----
 
     @Test
@@ -140,6 +280,210 @@ class ChannelRepositoryNetworkTest {
         assertTrue(request.url.queryParameter("fields")!!.split(",").containsAll(listOf("id", "name", "access_token", "tasks")))
         assertEquals("Bearer user_tok", request.header("Authorization"))
         assertNull("token khong duoc nam trong URL", request.url.queryParameter("access_token"))
+    }
+
+    @Test
+    fun facebookRefreshFindsTheConnectedPageInTheNextBatch() = runTest {
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("target", "Target", "old-page")).getOrThrow()
+        handler = { request ->
+            when (request.url.queryParameter("after")) {
+                null -> 200 to """
+                    {"data":[{"id":"other","name":"Other","access_token":"other-page"}],
+                     "paging":{"cursors":{"after":"next+batch/="},
+                     "next":"https://graph.facebook.com/v26.0/owner/accounts?access_token=renewed-user&after=next%2Bbatch%2F%3D"}}
+                """.trimIndent()
+                "next+batch/=" -> 200 to """
+                    {"data":[{"id":"target","name":"Target","access_token":"new-page","tasks":["ANALYZE"]}],
+                     "paging":{"cursors":{"after":"last"}}}
+                """.trimIndent()
+                else -> error("Unexpected pagination cursor")
+            }
+        }
+
+        val updated = repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+            user.copy(accessToken = "renewed-user", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(listOf("target"), updated.updated.map { it.accountId })
+        assertEquals("new-page", store.storage["FACEBOOK_target"]?.accessToken)
+        assertEquals(listOf("ANALYZE"), repository.getPageTasks(ChannelType.FACEBOOK, "target"))
+        assertEquals(2, requests.size)
+        requests.forEach { request ->
+            assertEquals("graph.facebook.com", request.url.host)
+            assertTrue(request.url.encodedPath.endsWith("/me/accounts"))
+            assertEquals("Bearer renewed-user", request.header("Authorization"))
+            assertNull(request.url.queryParameter("access_token"))
+        }
+    }
+
+    @Test
+    fun manualRetryUpdatesOnlyTheRequestedPageDuringAutomaticCooldown() = runTest {
+        val oldUser = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        val session = oldUser.copy(accessToken = "sdk-current", expiresAtMillis = Long.MAX_VALUE)
+        repository.connectFacebookSelectedPage(oldUser, FacebookPage("target", "Target", "old-target")).getOrThrow()
+        repository.connectFacebookSelectedPage(oldUser, FacebookPage("peer", "Peer", "old-peer")).getOrThrow()
+        handler = { 200 to """{"data":[{"id":"peer","name":"Peer","access_token":"auto-peer"}]}""" }
+
+        val first = repository.refreshFacebookChannels("owner", expiresBefore = 2L, sessionVersion = { 1L }) { session }
+        assertEquals(setOf("target"), first.outcome.retryablePageIds)
+        assertEquals(mapOf("target" to FacebookRefreshIssue.PAGE_NOT_RETURNED), first.outcome.issuesByAccountId)
+        handler = { request ->
+            check(request.url.queryParameter("after") == null)
+            200 to """
+                {"data":[{"id":"target","name":"Target","access_token":"retry-target"},
+                         {"id":"peer","name":"Peer","access_token":"other-peer"}],
+                 "paging":{"next":"https://graph.facebook.com/me/accounts?after=next","cursors":{"after":"next"}}}
+            """.trimIndent()
+        }
+        val retry = repository.retryFacebookPage("target", session, version = 1L, sessionVersion = { 1L })
+
+        assertEquals(listOf("target"), retry.outcome.updated.map { it.accountId })
+        assertEquals("retry-target", store.storage["FACEBOOK_target"]?.accessToken)
+        assertEquals("auto-peer", store.storage["FACEBOOK_peer"]?.accessToken)
+        assertEquals(2, requests.size)
+        assertEquals("Bearer sdk-current", requests.last().header("Authorization"))
+        assertEquals(FacebookRefreshSkip.COOLDOWN, repository.refreshFacebookChannels("owner", 2L, sessionVersion = { 1L }) {
+            error("Retry riêng không được reset lịch SDK.")
+        }.outcome.skipped)
+    }
+
+    @Test
+    fun pageRetriesUseCurrentTokenWhileAutomaticSdkRefreshIsWaiting() = runTest {
+        val savedUser = FacebookUserToken("original-user", 1L, null, "owner")
+        val current = savedUser.copy(accessToken = "current-user", expiresAtMillis = Long.MAX_VALUE)
+        repository.connectFacebookSelectedPage(savedUser, FacebookPage("first", "First", "old-first")).getOrThrow()
+        repository.connectFacebookSelectedPage(savedUser, FacebookPage("second", "Second", "old-second")).getOrThrow()
+        handler = {
+            200 to """{"data":[{"id":"first","name":"First","access_token":"new-first"},
+                         {"id":"second","name":"Second","access_token":"new-second"}]}"""
+        }
+        val sdkStarted = CompletableDeferred<Unit>()
+        val sdkResult = CompletableDeferred<FacebookUserToken>()
+        var sdkCalls = 0
+        val automatic = async {
+            repository.refreshFacebookChannels("owner", 2L, sessionVersion = { 1L }) {
+                sdkCalls++
+                sdkStarted.complete(Unit)
+                sdkResult.await()
+            }
+        }
+        try {
+            sdkStarted.await()
+            for (page in listOf("first", "second")) {
+                val retry = repository.retryFacebookPage(page, current, version = 1L, sessionVersion = { 1L })
+                assertEquals(listOf(page), retry.outcome.updated.map { it.accountId })
+                assertEquals("new-$page", store.storage["FACEBOOK_$page"]?.accessToken)
+            }
+            assertEquals(1, sdkCalls)
+            assertFalse(automatic.isCompleted)
+            assertEquals(listOf("Bearer current-user", "Bearer current-user"), requests.map { it.header("Authorization") })
+        } finally {
+            sdkResult.complete(current.copy(accessToken = "renewed-user"))
+        }
+        automatic.await()
+    }
+
+    @Test
+    fun pageRetrySkipsGraphWhenItsSdkTokenSnapshotIsFromAnOldSession() = runTest {
+        val current = FacebookUserToken("old-session", Long.MAX_VALUE, null, "owner")
+        repository.connectFacebookSelectedPage(current, FacebookPage("page", "Page", "old-page")).getOrThrow()
+
+        val result = repository.retryFacebookPage("page", current, version = 1L, sessionVersion = { 2L })
+
+        assertEquals(FacebookRefreshSkip.SDK_SESSION_CHANGED, result.outcome.skipped)
+        assertTrue(requests.isEmpty())
+        assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun upstreamFailureIsNotTreatedAsAMissingPage() = runTest {
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "old-page")).getOrThrow()
+        handler = { 503 to """{"error":{"code":2,"message":"Provider unavailable"}}""" }
+
+        val outcome = repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+            user.copy(accessToken = "current-user", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(mapOf("page" to FacebookRefreshIssue.PROVIDER_UNAVAILABLE), outcome.issuesByAccountId)
+        assertEquals(setOf("page"), outcome.retryablePageIds)
+        assertTrue(outcome.confirmedPageIds.isEmpty())
+        assertTrue(outcome.reconnectAccountIds.isEmpty())
+        assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun pageFetchFromPreviousSdkSessionIsDroppedBeforeWriting() = runTest {
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "old-page")).getOrThrow()
+        val sessionVersion = java.util.concurrent.atomic.AtomicLong(1L)
+        handler = {
+            sessionVersion.incrementAndGet()
+            200 to """{"data":[{"id":"page","name":"Page","access_token":"stale-page"}]}"""
+        }
+
+        val outcome = repository.refreshFacebookChannels(
+            "owner", expiresBefore = 2L, sessionVersion = sessionVersion::get,
+        ) {
+            user.copy(accessToken = "current-user", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(FacebookRefreshSkip.SDK_SESSION_CHANGED, outcome.skipped)
+        assertTrue(outcome.updated.isEmpty())
+        assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun facebookRefreshReportsInvalidSessionWithoutReplacingThePageToken() = runTest {
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "old-page")).getOrThrow()
+        handler = { 400 to """{"error":{"type":"OAuthException","code":190}}""" }
+
+        val result = repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+            user.copy(accessToken = "invalid-user", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(setOf(FacebookRefreshIssue.SESSION_INVALID), result.issues)
+        assertEquals(setOf("page"), result.reconnectAccountIds)
+        assertTrue(result.updated.isEmpty())
+        assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun facebookPagesReportsFailureWhenTheNextBatchFails() = runTest {
+        handler = { request ->
+            if (request.url.queryParameter("after") == null) {
+                200 to """
+                    {"data":[{"id":"first","name":"First","access_token":"first-token"}],
+                     "paging":{"cursors":{"after":"next"},"next":"https://graph.facebook.com/v26.0/owner/accounts?after=next"}}
+                """.trimIndent()
+            } else {
+                503 to "{}"
+            }
+        }
+
+        val result = repository.fetchFacebookPages("user_tok")
+
+        assertTrue(result.isFailure)
+        assertEquals(ChannelError.FACEBOOK_PAGES_LOAD_FAILED, failureError(result))
+        assertEquals(2, requests.size)
+    }
+
+    @Test
+    fun facebookPagesStopsWhenTheGraphApiRepeatsACursor() = runTest {
+        handler = {
+            200 to """
+                {"data":[],"paging":{"cursors":{"after":"same"},
+                 "next":"https://graph.facebook.com/v26.0/owner/accounts?after=same"}}
+            """.trimIndent()
+        }
+
+        val result = repository.fetchFacebookPages("user_tok")
+
+        assertTrue(result.isFailure)
+        assertEquals(ChannelError.FACEBOOK_PAGES_LOAD_FAILED, failureError(result))
+        assertEquals(2, requests.size)
     }
 
     @Test
@@ -190,7 +534,7 @@ class ChannelRepositoryNetworkTest {
         repository.connectFacebookProfile(user).getOrThrow()
         repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "page_tok")).getOrThrow()
 
-        val restored = ChannelRepositoryImpl(store, accounts) { _, _ -> }
+        val restored = ChannelRepositoryImpl(store, accounts, cleanup)
         assertEquals(true, restored.isFacebookProfile("profile"))
         assertEquals(false, restored.isFacebookProfile("page"))
         assertEquals("public_profile", restored.getGrantedScope(ChannelType.FACEBOOK, "page"))
@@ -281,6 +625,17 @@ class ChannelRepositoryNetworkTest {
     }
 
     @Test
+    fun linkedInReconnectDoesNotStoreAnotherAccount() = runTest {
+        linkedInHandler()
+
+        val result = repository.connectLinkedInViaBff("exchange", "state", "verifier", "original-account")
+
+        assertEquals(ChannelError.RECONNECT_ACCOUNT_MISMATCH, failureError(result))
+        assertTrue(store.storage.isEmpty())
+        assertTrue(accounts.load().isEmpty())
+    }
+
+    @Test
     fun `connectLinkedInViaBff doi token roi goi userinfo, luu han va scope that`() = runTest {
         linkedInHandler()
         val before = System.currentTimeMillis()
@@ -298,7 +653,59 @@ class ChannelRepositoryNetworkTest {
         assertEquals("Bearer AQtoken", userRequest.header("Authorization"))
         val saved = store.storage["LINKEDIN_abc123"]!!
         assertEquals("openid,profile,w_member_social", saved.scope)
-        assertTrue(saved.expiresAt >= before + 5184000L * 1000)
+        assertTrue(checkNotNull(saved.expiresAt) >= before + 5184000L * 1000)
+    }
+
+    @Test
+    fun linkedInRejectsExplicitlyExpiredTokensBeforeFetchingProfile() = runTest {
+        linkedInHandler(tokenResponse = 200 to """{"access_token":"old","expires_in":0}""")
+
+        val result = repository.connectLinkedInViaBff("exchange", "state", "verifier")
+
+        assertEquals(ChannelError.LINKEDIN_TOKEN_INVALID, failureError(result))
+        assertEquals(1, requests.size)
+        assertTrue(store.storage.isEmpty())
+    }
+
+    @Test
+    fun linkedInKeepsPreviousTokenIfReplacementExpiresWhileFetchingProfile() = runTest {
+        var now = 1_000_000L
+        repository.clock = { now }
+        linkedInHandler()
+        repository.connectLinkedInViaBff("initial", "state", "verifier").getOrThrow()
+        val previous = store.storage["LINKEDIN_abc123"]
+
+        handler = { request ->
+            if (request.url.host == "api.linkedin.com") {
+                now += 2_000L
+                200 to """{"sub":"abc123","name":"Member"}"""
+            } else {
+                200 to """{"access_token":"short-lived","expires_in":1}"""
+            }
+        }
+        val result = repository.connectLinkedInViaBff("exchange", "state", "verifier", "abc123")
+
+        assertEquals(ChannelError.LINKEDIN_TOKEN_INVALID, failureError(result))
+        assertEquals(previous, store.storage["LINKEDIN_abc123"])
+    }
+
+    @Test
+    fun linkedInExpiryDoesNotIncludeTimeSpentFetchingProfile() = runTest {
+        var now = 1_000_000L
+        repository.clock = { now }
+        handler = { request ->
+            if (request.url.host == "api.linkedin.com") {
+                now += 30_000L
+                200 to """{"sub":"abc123","name":"Example Member"}"""
+            } else {
+                now += 2_000L
+                200 to """{"access_token":"test-token","expires_in":3600}"""
+            }
+        }
+
+        repository.connectLinkedInViaBff("exchange", "state", "verifier").getOrThrow()
+
+        assertEquals(1_002_000L + 3_600_000L, repository.getTokenExpiresAt(ChannelType.LINKEDIN, "abc123"))
     }
 
     @Test
@@ -347,7 +754,7 @@ class ChannelRepositoryNetworkTest {
         repository.connectLinkedInViaBff("m", "s", "v").getOrThrow()
 
         val saved = store.storage["LINKEDIN_abc123"]!!
-        assertTrue(saved.expiresAt in before..(System.currentTimeMillis() + 3_600_000L))
+        assertTrue(checkNotNull(saved.expiresAt) in before..(System.currentTimeMillis() + 3_600_000L))
         assertNull(saved.scope)
     }
 

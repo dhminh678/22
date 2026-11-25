@@ -2,15 +2,23 @@ package com.lttbdd.socialagent
 
 import android.content.Intent
 import android.os.Bundle
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.ui.setupWithNavController
 import com.lttbdd.socialagent.data.network.LinkedInBffAuth
 import com.lttbdd.socialagent.databinding.ActivityMainBinding
+import com.lttbdd.socialagent.feature.channel.ChannelViewModel
+import com.lttbdd.socialagent.feature.channel.monitorFacebookRefresh
+import com.lttbdd.socialagent.feature.channel.facebookSdkSessionVersion
 import com.lttbdd.socialagent.feature.channel.LinkedInAuthRedirect
 import com.lttbdd.socialagent.feature.channel.LinkedInCallbackBus
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 
 /**
  * Activity duy nhất của app: chứa NavHostFragment và bottom navigation 5 tab.
@@ -26,6 +34,8 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var linkedInCallbackBus: LinkedInCallbackBus
 
+    private val channelViewModel: ChannelViewModel by viewModels()
+
     private lateinit var binding: ActivityMainBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,6 +45,14 @@ class MainActivity : AppCompatActivity() {
 
         val navHost = supportFragmentManager.findFragmentById(R.id.nav_host) as NavHostFragment
         binding.bottomNav.setupWithNavController(navHost.navController)
+
+        if (BuildConfig.FACEBOOK_APP_ID.isNotBlank() && !BuildConfig.FACEBOOK_APP_ID.contains("SOCIAL_AGENT")) {
+            lifecycleScope.launch {
+                repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    channelViewModel.monitorFacebookRefresh(currentSessionVersion = ::facebookSdkSessionVersion)
+                }
+            }
+        }
 
         // Mở lại Activity do deep link (khi app đang chạy nền nhưng Activity bị hủy): chỉ xử lý lần khởi tạo đầu.
         if (savedInstanceState == null) forwardLinkedInCallback(intent)

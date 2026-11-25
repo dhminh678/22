@@ -4,6 +4,7 @@ import com.lttbdd.socialagent.R
 import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.ConnectionStatus
+import com.lttbdd.socialagent.data.model.FacebookPageAccessIssue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +52,50 @@ class ChannelCapabilityEvaluatorTest {
             assertEquals(connected[3], expired[3])
             assertEquals(CapabilityStatusType.HANDED_OFF, expired[3].statusType)
             assertEquals(emptyList<CapabilityItemUiState>(), expired.filter { it.statusType == CapabilityStatusType.SUPPORTED })
+        }
+    }
+
+    @Test
+    fun `Page token bi thu hoi yeu cau ket noi lai du scope va task da luu day du`() {
+        assertPageAccessIssue(
+            FacebookPageAccessIssue.RECONNECT_REQUIRED,
+            CapabilityStatusType.REQUIRES_RECONNECT,
+            R.string.cap_status_requires_reconnect,
+            R.string.cap_fb_page_token_invalid,
+        )
+    }
+
+    @Test
+    fun `Page mat quyen hien yeu cau quyen du scope va task da luu day du`() {
+        assertPageAccessIssue(
+            FacebookPageAccessIssue.PERMISSION_REQUIRED,
+            CapabilityStatusType.REQUIRES_PERMISSION,
+            R.string.cap_status_requires_perm,
+            R.string.channel_status_page_permission_required,
+        )
+    }
+
+    private fun assertPageAccessIssue(
+        issue: FacebookPageAccessIssue,
+        expectedType: CapabilityStatusType,
+        expectedStatus: Int,
+        expectedCaption: Int,
+    ) {
+        val account = ChannelAccount(ChannelType.FACEBOOK, "page", "Page", ConnectionStatus.CONNECTED, emptySet())
+        val scopes = "pages_manage_posts,pages_read_engagement,pages_manage_engagement,read_insights"
+        val tasks = listOf("CREATE_CONTENT", "MODERATE", "ANALYZE")
+        val healthy = ChannelCapabilityEvaluator.evaluateCapabilities(account, scopes, tasks, isFacebookProfile = false)
+        val affected = ChannelCapabilityEvaluator.evaluateCapabilities(
+            account, scopes, tasks, isFacebookProfile = false, pageAccessIssue = issue,
+        )
+        val mention = affected.single { it.capabilityNameRes == R.string.cap_mention }
+        assertEquals(healthy.single { it.capabilityNameRes == R.string.cap_mention }, mention)
+        val apiCapabilities = affected.filter { it.capabilityNameRes != R.string.cap_mention }
+        assertEquals(4, apiCapabilities.size)
+        apiCapabilities.forEach {
+            assertEquals(expectedType, it.statusType)
+            assertEquals(expectedStatus, it.statusTextRes)
+            assertEquals(expectedCaption, it.captionRes)
         }
     }
 

@@ -4,17 +4,29 @@ import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.ConnectionStatus
 import com.lttbdd.socialagent.data.model.ChannelError
 import com.lttbdd.socialagent.data.model.ChannelException
+import com.lttbdd.socialagent.data.model.FacebookRefreshIssue
+import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.data.model.FacebookPage
 import com.lttbdd.socialagent.data.model.FacebookUserToken
 import com.lttbdd.socialagent.data.model.OAuthToken
 import com.lttbdd.socialagent.data.security.PendingChannelWrite
 import com.lttbdd.socialagent.data.security.TokenStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -27,27 +39,18 @@ class ChannelRepositoryTest {
     private lateinit var repository: ChannelRepositoryImpl
     private lateinit var fakeTokenStore: FakeTokenStore
     private lateinit var fakeAccountStore: FakeAccountStore
-    private val clearedChannels = mutableListOf<ChannelType>()
-    private var cleanupFailure = false
-    private var facebookSdkSession: String? = null
-    private var facebookSdkLoggedIn: Boolean
-        get() = facebookSdkSession != null
-        set(value) {
-            facebookSdkSession = if (value) "original-session" else null
-        }
-    private var facebookSignOutCalls = 0
-    private var facebookSignOutFailure = false
 
     private class FakeAccountStore(var saved: List<StoredChannelAccount> = emptyList()) : ChannelAccountStore {
         var loadError = false
         var saveError = false
+        var failUpsertFor: String? = null
 
         override suspend fun load(): List<StoredChannelAccount> {
             if (loadError) throw IOException("Đọc kho lỗi")
             return saved
         }
         override suspend fun upsert(account: StoredChannelAccount) {
-            if (saveError) throw IOException("Lưu metadata lỗi")
+            if (saveError || failUpsertFor == account.accountId) throw IOException("Lưu metadata lỗi")
             saved = saved.filterNot { it.type == account.type && it.accountId == account.accountId } + account
         }
 
@@ -61,6 +64,7 @@ class ChannelRepositoryTest {
         val storage = mutableMapOf<String, OAuthToken>()
         var stageError = false
         var disconnectStageError = false
+        var afterStage: () -> Unit = {}
         var finishError = false
         val staged = mutableMapOf<PendingChannelWrite, OAuthToken?>()
         val stagedToken: OAuthToken? get() = staged.values.singleOrNull()
@@ -79,30 +83,26 @@ class ChannelRepositoryTest {
             staged.keys.removeAll { it.type == channelType && it.accountId == accountId }
         }
 
-        override suspend fun stageDisconnect(write: PendingChannelWrite) {
-            if (disconnectStageError) throw IOException("Ghi thao tác ngắt kết nối lỗi")
-            removeToken(write.type, write.accountId)
-            staged[write] = null
-        }
-
-        override suspend fun completeFacebookSignOut(write: PendingChannelWrite): PendingChannelWrite {
-            check(write in staged)
-            val completed = write.copy(facebookSessionToSignOut = null)
-            staged.remove(write)
-            staged[completed] = null
-            return completed
-        }
-
         override suspend fun stageToken(write: PendingChannelWrite, token: OAuthToken) {
             if (stageError) throw IOException("Ghi token tạm lỗi")
             check(staged.keys.none { it.type == write.type && it.accountId == write.accountId })
             staged[write] = token
+            afterStage()
         }
 
         override suspend fun loadPendingWrites() = staged.keys.toList()
 
         override suspend fun loadStagedToken(write: PendingChannelWrite) =
             staged[write].takeUnless { unreadableStagedFor == write.accountId }
+
+        override suspend fun stageDisconnect(write: PendingChannelWrite) {
+            if (disconnectStageError || stageError) throw IOException("Ghi ngắt kết nối lỗi")
+            removeToken(write.type, write.accountId)
+            staged[write] = null
+            afterStage()
+        }
+
+        override suspend fun completeFacebookSignOut(write: PendingChannelWrite): PendingChannelWrite = write
 
         override suspend fun finishPendingWrite(write: PendingChannelWrite, commit: Boolean) {
             if (finishError || failFinishFor == write.accountId) throw IOException("Dọn token tạm lỗi")
@@ -115,29 +115,21 @@ class ChannelRepositoryTest {
         }
     }
 
+    private class FakeChannelDataCleanup : ChannelDataCleanup {
+        override suspend fun currentFacebookSession(): String? = "fb_user_123"
+        override suspend fun signOutFacebook(expectedSession: String) {}
+        override suspend fun clear(type: ChannelType, operationId: String) {}
+    }
+
+    private lateinit var cleanup: FakeChannelDataCleanup
+
     @Before
     fun setUp() {
         fakeTokenStore = FakeTokenStore()
         fakeAccountStore = FakeAccountStore()
-        repository = newRepository()
+        cleanup = FakeChannelDataCleanup()
+        repository = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup).apply { elapsedRealtime = { 0L } }
     }
-
-    private fun newRepository() =
-        ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, object : ChannelDataCleanup {
-            override suspend fun clear(type: ChannelType, operationId: String) {
-                if (cleanupFailure) throw IOException("Xoá dữ liệu lỗi")
-                clearedChannels.add(type)
-            }
-
-            override suspend fun currentFacebookSession(): String? = facebookSdkSession
-
-            override suspend fun signOutFacebook(expectedSession: String) {
-                if (facebookSdkSession != expectedSession) return
-                facebookSignOutCalls++
-                if (facebookSignOutFailure) throw IllegalStateException("Đăng xuất Facebook SDK lỗi")
-                facebookSdkLoggedIn = false
-            }
-        })
 
     @Test
     fun recoveredTokenAppearsInFirstChannelList() = runTest {
@@ -149,12 +141,318 @@ class ChannelRepositoryTest {
 
         val accounts = repository.getConnectedChannels().first()
 
-        assertEquals(20L, repository.getTokenExpiresAt(type, "a"))
+        assertNull(repository.getTokenExpiresAt(type, "a"))
+        assertEquals("new-a", fakeTokenStore.storage["FACEBOOK_a"]?.accessToken)
         assertEquals(listOf("a"), accounts.map { it.accountId })
     }
 
     @Test
-    fun `Page ket noi luu han va quyen that cua phien SDK, khong gan cung 60 ngay`() = runTest {
+    fun facebookPageStoredBeforeUpgradeRequiresReconnectWithoutReportingAnExpiry() = runTest {
+        val type = ChannelType.FACEBOOK
+        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "legacy", "Page"))
+        val old = OAuthToken("legacy-token", 1L, isFacebookProfile = false)
+        fakeTokenStore.saveToken(type, "legacy", old)
+        assertNull(repository.getTokenExpiresAt(type, "legacy"))
+        assertTrue(repository.needsFacebookReconnect("legacy"))
+        val skipped = repository.refreshFacebookChannels("owner", expiresBefore = 10L) {
+            error("Không được gọi SDK khi chưa xác nhận chủ sở hữu.")
+        }.outcome
+        assertEquals(FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS, skipped.skipped)
+
+        val user = FacebookUserToken("user", 20L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("legacy", "Page", "new-page")).getOrThrow()
+        assertEquals(false, repository.needsFacebookReconnect("legacy"))
+        assertNull(repository.getTokenExpiresAt(type, "legacy"))
+    }
+
+    @Test
+    fun expiredFacebookUserSessionRequestsReconnectWithoutInvalidatingPageToken() = runTest {
+        val type = ChannelType.FACEBOOK
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "old-page")).getOrThrow()
+        repository.connectFacebookSelectedPage(
+            user.copy(userId = "different-owner"), FacebookPage("other", "Other page", "other-token"),
+        ).getOrThrow()
+        repository.clock = { 5L }
+
+        val outcome = repository.refreshFacebookChannels("owner", expiresBefore = 10L) { user }.outcome
+
+        assertEquals(setOf(FacebookRefreshIssue.USER_SESSION_EXPIRED), outcome.issues)
+        assertEquals(setOf("page"), outcome.reconnectAccountIds)
+        assertNull(repository.getTokenExpiresAt(type, "page"))
+        assertEquals(1L, repository.getFacebookPageSessionExpiresAt("page"))
+        assertEquals("old-page", fakeTokenStore.storage["FACEBOOK_page"]?.accessToken)
+    }
+
+    @Test
+    fun unchangedFacebookPageTokenDoesNotKeepAnUnverifiedExpiry() = runTest {
+        val type = ChannelType.FACEBOOK
+        val expiryFromPreviousVersion = 1L
+        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "page", "Page"))
+        fakeTokenStore.saveToken(
+            type, "page", OAuthToken(
+                "same-page-token",
+                expiresAt = expiryFromPreviousVersion,
+                isFacebookProfile = false,
+                facebookUserId = "owner",
+                facebookUserSessionExpiresAt = expiryFromPreviousVersion,
+            ),
+        )
+        repository.httpClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"data":[{"id":"page","name":"Page","access_token":"same-page-token"}]}""".toResponseBody())
+                .build()
+        }.build()
+
+        assertNull(repository.getTokenExpiresAt(type, "page"))
+        val check = repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+            FacebookUserToken("refreshed-user", Long.MAX_VALUE, "pages_show_list", "owner")
+        }
+
+        assertEquals(listOf("page"), check.outcome.updated.map { it.accountId })
+        assertNull(fakeTokenStore.storage["FACEBOOK_page"]?.expiresAt)
+        assertEquals(Long.MAX_VALUE, fakeTokenStore.storage["FACEBOOK_page"]?.facebookUserSessionExpiresAt)
+        assertNull(repository.getTokenExpiresAt(type, "page"))
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun simultaneousRepositoryCallersShareTheSameSdkCooldown() = runTest {
+        val type = ChannelType.FACEBOOK
+        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "owner", "Profile"))
+        fakeTokenStore.saveToken(type, "owner", OAuthToken("old", 1L, isFacebookProfile = true))
+        val sdkStarted = CompletableDeferred<Unit>()
+        val sdkResult = CompletableDeferred<FacebookUserToken>()
+        val first = async {
+            repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+                sdkStarted.complete(Unit)
+                sdkResult.await()
+            }
+        }
+        sdkStarted.await()
+        val second = async {
+            repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+                error("Không gọi SDK lần hai trong thời gian chờ.")
+            }
+        }
+        runCurrent()
+        assertTrue(!second.isCompleted)
+        sdkResult.complete(FacebookUserToken("new", Long.MAX_VALUE, "public_profile", "owner"))
+        assertEquals(listOf("owner"), first.await().outcome.updated.map { it.accountId })
+        assertEquals(FacebookRefreshSkip.COOLDOWN, second.await().outcome.skipped)
+    }
+
+    @Test
+    fun sameUserReconnectDuringSdkWaitDiscardsOldResultAndAllowsImmediateRefresh() = runTest {
+        val type = ChannelType.FACEBOOK
+        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "owner", "Profile"))
+        fakeTokenStore.saveToken(type, "owner", OAuthToken("old", 1L, isFacebookProfile = true))
+        var session = 1L
+        val started = CompletableDeferred<Unit>()
+        val sdkResult = CompletableDeferred<FacebookUserToken>()
+        val first = async {
+            repository.refreshFacebookChannels("owner", 2L, sessionVersion = { session }) {
+                started.complete(Unit)
+                sdkResult.await()
+            }
+        }
+        started.await()
+
+        session++
+        sdkResult.complete(FacebookUserToken("stale", Long.MAX_VALUE, null, "owner"))
+
+        assertEquals(FacebookRefreshSkip.SDK_SESSION_CHANGED, first.await().outcome.skipped)
+        assertEquals("old", fakeTokenStore.storage["FACEBOOK_owner"]?.accessToken)
+        val fresh = repository.refreshFacebookChannels("owner", 2L, sessionVersion = { session }) {
+            FacebookUserToken("fresh", Long.MAX_VALUE, null, "owner")
+        }
+        assertEquals(listOf("owner"), fresh.outcome.updated.map { it.accountId })
+        assertEquals("fresh", fakeTokenStore.storage["FACEBOOK_owner"]?.accessToken)
+    }
+
+    @Test
+    fun sdkSessionChangeWhileStagingTokenKeepsPreviouslyCommittedToken() = runTest {
+        val type = ChannelType.FACEBOOK
+        val metadata = StoredChannelAccount(type, "owner", "Profile")
+        fakeAccountStore.saved = listOf(metadata)
+        fakeTokenStore.saveToken(type, "owner", OAuthToken("old", 1L, isFacebookProfile = true))
+        var session = 1L
+        fakeTokenStore.afterStage = { session++ }
+
+        val check = repository.refreshFacebookChannels("owner", 2L, sessionVersion = { session }) {
+            FacebookUserToken("stale", Long.MAX_VALUE, null, "owner")
+        }
+
+        assertEquals(FacebookRefreshSkip.SDK_SESSION_CHANGED, check.outcome.skipped)
+        assertEquals(listOf(metadata), fakeAccountStore.saved)
+        assertEquals("old", fakeTokenStore.storage["FACEBOOK_owner"]?.accessToken)
+        assertTrue(fakeTokenStore.staged.isEmpty())
+    }
+
+    @Test
+    fun facebookRefreshReportsStorageFailureAndKeepsCommittedToken() = runTest {
+        val type = ChannelType.FACEBOOK
+        val user = FacebookUserToken("user", 1L, "public_profile", "owner")
+        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "owner", "Profile"))
+        val old = OAuthToken("old-user", 1L, isFacebookProfile = true)
+        fakeTokenStore.saveToken(type, "owner", old)
+        fakeAccountStore.saveError = true
+
+        val outcome = repository.refreshFacebookChannels("owner", expiresBefore = 2L) {
+            user.copy(expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(setOf(FacebookRefreshIssue.STORAGE), outcome.issues)
+        assertTrue(outcome.updated.isEmpty())
+        assertTrue(outcome.reconnectAccountIds.isEmpty())
+        assertEquals(old, fakeTokenStore.storage["FACEBOOK_owner"])
+    }
+
+    @Test
+    fun facebookRefreshOnlyUpdatesExistingPagesForTheSameOwner() = runTest {
+        val type = ChannelType.FACEBOOK
+        val previous = FacebookUserToken("original-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(previous, FacebookPage("page", "Page", "old-page")).getOrThrow()
+        repository.connectFacebookSelectedPage(previous, FacebookPage("missing", "Missing", "old-missing")).getOrThrow()
+        repository.connectFacebookSelectedPage(
+            previous.copy(expiresAtMillis = 500L), FacebookPage("healthy", "Healthy", "old-healthy"),
+        ).getOrThrow()
+        repository.connectFacebookSelectedPage(
+            previous.copy(userId = "another-owner"), FacebookPage("other", "Other", "old-other"),
+        ).getOrThrow()
+        val refreshed = previous.copy(accessToken = "renewed-user", expiresAtMillis = Long.MAX_VALUE)
+        var calls = 0
+        repository.httpClient = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            assertEquals("Bearer renewed-user", chain.request().header("Authorization"))
+            Response.Builder()
+                .request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(
+                    """
+                    {"data":[{"id":"page","name":"Page","access_token":"new-page"},
+                    {"id":"other","name":"Other","access_token":"wrong-page"},
+                    {"id":"healthy","name":"Healthy","access_token":"new-healthy"}]}
+                    """.trimIndent().toResponseBody(),
+                )
+                .build()
+        }.build()
+
+        val updated = repository.refreshFacebookChannels("owner", expiresBefore = 10L) { refreshed }.outcome
+        assertEquals(listOf("page"), updated.updated.map { it.accountId })
+        assertEquals(1, calls)
+        assertEquals("new-page", fakeTokenStore.storage["FACEBOOK_page"]?.accessToken)
+        assertNull(repository.getTokenExpiresAt(type, "page"))
+        assertEquals(Long.MAX_VALUE, fakeTokenStore.storage["FACEBOOK_page"]?.facebookUserSessionExpiresAt)
+        assertEquals("old-missing", fakeTokenStore.storage["FACEBOOK_missing"]?.accessToken)
+        assertEquals(mapOf("missing" to FacebookRefreshIssue.PAGE_NOT_RETURNED), updated.issuesByAccountId)
+        assertEquals(setOf("page"), updated.confirmedPageIds)
+        assertTrue(updated.reconnectAccountIds.isEmpty())
+        assertEquals("old-other", fakeTokenStore.storage["FACEBOOK_other"]?.accessToken)
+        assertEquals("old-healthy", fakeTokenStore.storage["FACEBOOK_healthy"]?.accessToken)
+    }
+
+    @Test
+    fun facebookRefreshKeepsOtherPageUpdatesWhenOnePageCannotBeSaved() = runTest {
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        for (id in listOf("a", "b", "c")) {
+            repository.connectFacebookSelectedPage(user, FacebookPage(id, id, "old-$id")).getOrThrow()
+        }
+        fakeAccountStore.failUpsertFor = "b"
+        repository.httpClient = OkHttpClient.Builder().addInterceptor { chain ->
+            val pages = listOf("a", "b", "c").joinToString(",") { id ->
+                """{"id":"$id","name":"$id","access_token":"new-$id"}"""
+            }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"data":[$pages]}""".toResponseBody())
+                .build()
+        }.build()
+
+        val outcome = repository.refreshFacebookChannels("owner", expiresBefore = 10L) {
+            user.copy(accessToken = "new-user", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertEquals(setOf("a", "c"), outcome.updated.map { it.accountId }.toSet())
+        assertEquals(mapOf("b" to FacebookRefreshIssue.STORAGE), outcome.issuesByAccountId)
+        assertEquals("new-a", fakeTokenStore.storage["FACEBOOK_a"]?.accessToken)
+        assertEquals("old-b", fakeTokenStore.storage["FACEBOOK_b"]?.accessToken)
+        assertEquals("new-c", fakeTokenStore.storage["FACEBOOK_c"]?.accessToken)
+        assertTrue(fakeTokenStore.staged.isEmpty())
+    }
+
+    @Test
+    fun cancelledFacebookRefreshDoesNotWriteOrRestoreDisconnectedAccount() = runTest {
+        val type = ChannelType.FACEBOOK
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        repository.connectFacebookSelectedPage(user, FacebookPage("keep", "Keep", "old-keep")).getOrThrow()
+        repository.connectFacebookSelectedPage(user, FacebookPage("gone", "Gone", "old-gone")).getOrThrow()
+        var pageRequests = 0
+        repository.httpClient = OkHttpClient.Builder().addInterceptor {
+            pageRequests++
+            error("Không tải Page sau khi refresh đã hủy.")
+        }.build()
+        val started = CompletableDeferred<Unit>()
+        val callback = CompletableDeferred<Unit>()
+        val refresh = async {
+            repository.refreshFacebookChannels("owner", expiresBefore = 10L) {
+                started.complete(Unit)
+                withContext(NonCancellable) { callback.await() }
+                user.copy(accessToken = "late-user", expiresAtMillis = Long.MAX_VALUE)
+            }
+        }
+        started.await()
+        refresh.cancel()
+        repository.disconnectChannel(type, "gone").getOrThrow()
+        callback.complete(Unit)
+        refresh.cancelAndJoin()
+
+        assertTrue(refresh.isCancelled)
+        assertEquals(0, pageRequests)
+        assertEquals("old-keep", fakeTokenStore.storage["FACEBOOK_keep"]?.accessToken)
+        assertNull(fakeTokenStore.storage["FACEBOOK_gone"])
+        assertEquals(listOf("keep"), repository.getConnectedChannels().first().map { it.accountId })
+        assertTrue(fakeTokenStore.staged.isEmpty())
+    }
+
+    @Test
+    fun facebookRefreshPreservesChangesMadeWhileWaitingForSdk() = runTest {
+        val type = ChannelType.FACEBOOK
+        val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
+        val reconnected = FacebookPage("reconnected", "Reconnected", "original-page")
+        val disconnected = FacebookPage("disconnected", "Disconnected", "original-other-page")
+        repository.connectFacebookSelectedPage(user, reconnected).getOrThrow()
+        repository.connectFacebookSelectedPage(user, disconnected).getOrThrow()
+        repository.httpClient = OkHttpClient.Builder().addInterceptor { chain ->
+            val response = """
+                {"data":[{"id":"reconnected","name":"Reconnected","access_token":"stale-page"},
+                {"id":"disconnected","name":"Disconnected","access_token":"stale-other-page"}]}
+            """.trimIndent()
+            Response.Builder()
+                .request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(response.toResponseBody())
+                .build()
+        }.build()
+
+        val threshold = System.currentTimeMillis() + 120_000
+        val reconnectExpiry = threshold - 60_000
+        val updated = repository.refreshFacebookChannels("owner", threshold) {
+            repository.connectFacebookSelectedPage(
+                user.copy(expiresAtMillis = reconnectExpiry), reconnected.copy(accessToken = "manual-page"),
+            ).getOrThrow()
+            repository.disconnectChannel(type, disconnected.id).getOrThrow()
+            user.copy(accessToken = "sdk-token", expiresAtMillis = Long.MAX_VALUE)
+        }.outcome
+
+        assertTrue(updated.updated.isEmpty())
+        assertTrue(updated.issuesByAccountId.isEmpty())
+        assertEquals("manual-page", fakeTokenStore.storage["FACEBOOK_reconnected"]?.accessToken)
+        assertNull(repository.getTokenExpiresAt(type, reconnected.id))
+        assertEquals(reconnectExpiry, fakeTokenStore.storage["FACEBOOK_${reconnected.id}"]?.facebookUserSessionExpiresAt)
+        assertNull(fakeTokenStore.storage["FACEBOOK_disconnected"])
+        assertEquals(listOf(reconnected.id), repository.getConnectedChannels().first().map { it.accountId })
+    }
+
+    @Test
+    fun facebookPageStoresSessionExpirySeparatelyFromPageExpiry() = runTest {
         val user = FacebookUserToken("user_tok", expiresAtMillis = 1_234_567L, grantedScope = "pages_show_list,read_insights")
 
         val result = repository.connectFacebookSelectedPage(user, FacebookPage("p9", "Page Chin", "page_tok"))
@@ -162,7 +460,8 @@ class ChannelRepositoryTest {
         assertTrue(result.isSuccess)
         val token = fakeTokenStore.storage["FACEBOOK_p9"]!!
         assertEquals("page_tok", token.accessToken)
-        assertEquals(1_234_567L, token.expiresAt)
+        assertNull(token.expiresAt)
+        assertEquals(1_234_567L, token.facebookUserSessionExpiresAt)
         assertEquals("pages_show_list,read_insights", token.scope)
     }
 
@@ -187,7 +486,7 @@ class ChannelRepositoryTest {
     fun `mo lai app khoi phuc kenh con token`() = runTest {
         fakeAccountStore.saved = listOf(StoredChannelAccount(ChannelType.FACEBOOK, "p1", "Page Mot"))
         fakeTokenStore.saveToken(ChannelType.FACEBOOK, "p1", OAuthToken("t", 10L, "pages_show_list"))
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
 
         val channels = restarted.getConnectedChannels().first()
 
@@ -285,9 +584,9 @@ class ChannelRepositoryTest {
 
         assertEquals(ChannelError.CHANNELS_SAVE_FAILED, (result.exceptionOrNull() as ChannelException).error)
         assertEquals("new", fakeTokenStore.stagedToken?.accessToken)
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
         assertEquals("Tên cũ", restarted.getConnectedChannels().first().single().displayName)
-        assertEquals(10L, restarted.getTokenExpiresAt(type, "p1"))
+        assertNull(restarted.getTokenExpiresAt(type, "p1"))
         assertEquals("pages_show_list", restarted.getGrantedScope(type, "p1"))
 
         fakeTokenStore.finishError = false
@@ -322,9 +621,10 @@ class ChannelRepositoryTest {
 
         assertTrue(result.isSuccess)
         assertEquals("old", fakeTokenStore.storage["FACEBOOK_p1"]?.accessToken)
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
         assertEquals("Tên mới", restarted.getConnectedChannels().first().single().displayName)
-        assertEquals(20L, restarted.getTokenExpiresAt(type, "p1"))
+        assertNull(restarted.getTokenExpiresAt(type, "p1"))
+        assertEquals(20L, fakeTokenStore.stagedToken?.facebookUserSessionExpiresAt)
         assertEquals("pages_manage_posts", restarted.getGrantedScope(type, "p1"))
 
         fakeTokenStore.finishError = false
@@ -342,9 +642,10 @@ class ChannelRepositoryTest {
         repository.connectFacebookSelectedPage(user, FacebookPage("b", "B", "token-b")).getOrThrow()
         repository.disconnectChannel(type, "b").getOrThrow()
 
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
         assertEquals("a", restarted.getConnectedChannels().first().single().accountId)
-        assertEquals(20L, restarted.getTokenExpiresAt(type, "a"))
+        assertNull(restarted.getTokenExpiresAt(type, "a"))
+        assertEquals(20L, fakeTokenStore.stagedToken?.facebookUserSessionExpiresAt)
         assertNull(fakeTokenStore.storage["FACEBOOK_b"])
     }
 
@@ -361,8 +662,10 @@ class ChannelRepositoryTest {
         repository.connectFacebookSelectedPage(
             FacebookUserToken("user", 40L, null), FacebookPage("p1", "Page", "fresh"),
         ).getOrThrow()
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
-        assertEquals(40L, restarted.getTokenExpiresAt(type, "p1"))
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
+        assertNull(restarted.getTokenExpiresAt(type, "p1"))
+        assertEquals(40L, fakeTokenStore.storage["FACEBOOK_p1"]?.facebookUserSessionExpiresAt)
+        assertEquals("fresh", fakeTokenStore.storage["FACEBOOK_p1"]?.accessToken)
     }
 
     @Test
@@ -381,13 +684,14 @@ class ChannelRepositoryTest {
 
         fakeTokenStore.unreadableStagedFor = null
         fakeTokenStore.failFinishFor = null
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
         assertEquals(setOf("a", "b"), restarted.getConnectedChannels().first().map { it.accountId }.toSet())
-        assertEquals(20L, restarted.getTokenExpiresAt(type, "a"))
+        assertNull(restarted.getTokenExpiresAt(type, "a"))
+        assertEquals("new-a", fakeTokenStore.storage["FACEBOOK_a"]?.accessToken)
     }
 
     @Test
-    fun disconnectRecoversMetadataDeletionAfterRestart() = runTest {
+    fun `ngat ket noi loi xoa metadata thi khoi dong lai khong phuc hoi token va thu lai duoc`() = runTest {
         val type = ChannelType.FACEBOOK
         fakeTokenStore.failFinishFor = "a"
         repository.connectFacebookSelectedPage(
@@ -399,20 +703,18 @@ class ChannelRepositoryTest {
         assertTrue(fakeTokenStore.staged.keys.single().disconnect)
         assertTrue(fakeTokenStore.storage.isEmpty())
 
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
         assertTrue(restarted.getConnectedChannels().first().isEmpty())
-        assertTrue(fakeTokenStore.staged.keys.single().disconnect)
         fakeAccountStore.saveError = false
         fakeTokenStore.failFinishFor = null
-        assertTrue(restarted.getConnectedChannels().first().isEmpty())
+        restarted.disconnectChannel(type, "a").getOrThrow()
         assertTrue(fakeAccountStore.saved.isEmpty())
-        assertTrue(fakeTokenStore.staged.isEmpty())
     }
 
     @Test
     fun `tai khoan mat token thi khong khoi phuc`() = runTest {
         fakeAccountStore.saved = listOf(StoredChannelAccount(ChannelType.LINKEDIN, "li1", "Nguoi Dung"))
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { _, _ -> }
+        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore, cleanup)
 
         assertTrue(restarted.getConnectedChannels().first().isEmpty())
     }
@@ -447,9 +749,10 @@ class ChannelRepositoryTest {
     }
 
     @Test
-    fun `parseBffToken bo qua han khong hop le`() {
-        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":0}""")!!.expiresInSeconds)
-        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":-5}""")!!.expiresInSeconds)
+    fun `parseBffToken tu choi han khong hop le`() {
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":0}"""))
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":-5}"""))
+        assertNull(ChannelRepositoryImpl.parseBffToken("""{"access_token":"a","expires_in":{}}"""))
     }
 
     @Test
@@ -478,285 +781,6 @@ class ChannelRepositoryTest {
         val disconnectResult = repository.disconnectChannel(ChannelType.FACEBOOK, "p1")
         assertTrue(disconnectResult.isSuccess)
         assertEquals(0, repository.getConnectedChannels().first().size)
-    }
-
-    @Test
-    fun disconnectClearsSharedDataOnlyWhenLastAccountOfThatNetworkIsRemoved() = runTest {
-        val facebook = ChannelType.FACEBOOK
-        val linkedin = ChannelType.LINKEDIN
-        fakeAccountStore.saved = listOf(
-            StoredChannelAccount(facebook, "a", "Page A"),
-            StoredChannelAccount(facebook, "b", "Page B"),
-            StoredChannelAccount(linkedin, "a", "LinkedIn A"),
-        )
-        fakeTokenStore.saveToken(facebook, "a", OAuthToken("page-a", 1))
-        fakeTokenStore.saveToken(facebook, "b", OAuthToken("page-b", 1))
-        fakeTokenStore.saveToken(linkedin, "a", OAuthToken("member-a", 1))
-        facebookSdkLoggedIn = true
-
-        repository.disconnectChannel(facebook, "a").getOrThrow()
-
-        assertTrue(facebookSdkLoggedIn)
-        assertTrue(clearedChannels.isEmpty())
-        assertEquals(setOf("FACEBOOK_b", "LINKEDIN_a"), fakeTokenStore.storage.keys)
-        assertEquals(setOf(facebook to "b", linkedin to "a"), fakeAccountStore.saved.map { it.type to it.accountId }.toSet())
-
-        repository.disconnectChannel(facebook, "b").getOrThrow()
-        repository.disconnectChannel(facebook, "b").getOrThrow()
-
-        assertTrue(!facebookSdkLoggedIn)
-        assertEquals(listOf(facebook), clearedChannels)
-        assertEquals(setOf("LINKEDIN_a"), fakeTokenStore.storage.keys)
-        assertEquals(listOf(linkedin), repository.getConnectedChannels().first().map { it.type })
-    }
-
-    @Test
-    fun failedFacebookSdkSignOutDoesNotBlockLocalDisconnectCleanup() = runTest {
-        val type = ChannelType.FACEBOOK
-        repository.connectFacebookSelectedPage(
-            FacebookUserToken("user", 5L, null), FacebookPage("a", "Page A", "page-token"),
-        ).getOrThrow()
-        facebookSdkLoggedIn = true
-        facebookSignOutFailure = true
-
-        val disconnect = repository.disconnectChannel(type, "a")
-
-        assertEquals(ChannelError.FACEBOOK_SIGN_OUT_FAILED, (disconnect.exceptionOrNull() as ChannelException).error)
-        assertTrue(facebookSdkLoggedIn)
-        assertTrue(fakeTokenStore.storage.isEmpty())
-        assertTrue(fakeAccountStore.saved.isEmpty())
-        assertEquals(listOf(type), clearedChannels)
-        assertEquals("original-session", fakeTokenStore.staged.keys.single().facebookSessionToSignOut)
-        assertTrue(repository.hasPendingDisconnectCleanup.value)
-
-        facebookSignOutFailure = false
-        assertTrue(repository.retryPendingDisconnectCleanup())
-        assertFalse(facebookSdkLoggedIn)
-        assertTrue(fakeTokenStore.staged.isEmpty())
-        assertFalse(repository.hasPendingDisconnectCleanup.value)
-    }
-
-    @Test
-    fun startupSignsOutTheJournaledFacebookSessionAfterCrashBeforeSdkLogout() = runTest {
-        val type = ChannelType.FACEBOOK
-        fakeAccountStore.saved = listOf(StoredChannelAccount(type, "a", "Page A"))
-        fakeTokenStore.saveToken(type, "a", OAuthToken("page-token", 5L))
-        facebookSdkLoggedIn = true
-        fakeTokenStore.stageDisconnect(
-            PendingChannelWrite(
-                "disconnect-a", type, "a",
-                disconnect = true,
-                clearChannelData = true,
-                facebookSessionToSignOut = facebookSdkSession,
-            ),
-        )
-
-        val restarted = newRepository()
-        assertTrue(restarted.getConnectedChannels().first().isEmpty())
-
-        assertEquals(1, facebookSignOutCalls)
-        assertFalse(facebookSdkLoggedIn)
-        assertEquals(listOf(type), clearedChannels)
-        assertTrue(fakeAccountStore.saved.isEmpty())
-        assertTrue(fakeTokenStore.staged.isEmpty())
-        assertFalse(restarted.hasPendingDisconnectCleanup.value)
-    }
-
-    @Test
-    fun sdkSignOutCompletionIsJournaledEvenWhenLocalCleanupFails() = runTest {
-        val type = ChannelType.FACEBOOK
-        repository.connectFacebookSelectedPage(
-            FacebookUserToken("user", 5L, null), FacebookPage("a", "Page A", "page-token"),
-        ).getOrThrow()
-        facebookSdkLoggedIn = true
-        cleanupFailure = true
-
-        val disconnect = repository.disconnectChannel(type, "a")
-
-        assertEquals(ChannelError.DISCONNECT_CLEANUP_FAILED, (disconnect.exceptionOrNull() as ChannelException).error)
-        assertEquals(1, facebookSignOutCalls)
-        assertNull(fakeTokenStore.staged.keys.single().facebookSessionToSignOut)
-        cleanupFailure = false
-        facebookSdkSession = "new-session"
-        assertTrue(newRepository().retryPendingDisconnectCleanup())
-        assertEquals("new-session", facebookSdkSession)
-        assertEquals(1, facebookSignOutCalls)
-    }
-
-    @Test
-    fun failedLocalCleanupRemainsRetryableWhenFacebookSignOutAlsoFails() = runTest {
-        val type = ChannelType.FACEBOOK
-        repository.connectFacebookSelectedPage(
-            FacebookUserToken("user", 5L, null), FacebookPage("a", "Page A", "page-token"),
-        ).getOrThrow()
-        facebookSdkLoggedIn = true
-        facebookSignOutFailure = true
-        cleanupFailure = true
-
-        val disconnect = repository.disconnectChannel(type, "a")
-
-        assertEquals(ChannelError.DISCONNECT_CLEANUP_FAILED, (disconnect.exceptionOrNull() as ChannelException).error)
-        assertTrue(repository.hasPendingDisconnectCleanup.value)
-        assertTrue(fakeTokenStore.staged.keys.single().disconnect)
-
-        cleanupFailure = false
-        facebookSignOutFailure = false
-        facebookSdkSession = "new-session"
-        assertTrue(newRepository().retryPendingDisconnectCleanup())
-
-        assertEquals("new-session", facebookSdkSession)
-        assertEquals(1, facebookSignOutCalls)
-        assertEquals(listOf(type), clearedChannels)
-        assertTrue(fakeTokenStore.staged.isEmpty())
-    }
-
-    @Test
-    fun failedTokenDeletionDoesNotEraseSharedChannelData() = runTest {
-        val type = ChannelType.FACEBOOK
-        repository.connectFacebookSelectedPage(
-            FacebookUserToken("user", 5L, null), FacebookPage("a", "Page A", "page-token"),
-        ).getOrThrow()
-        fakeTokenStore.disconnectStageError = true
-
-        val disconnect = repository.disconnectChannel(type, "a")
-
-        assertEquals(ChannelError.CHANNELS_SAVE_FAILED, (disconnect.exceptionOrNull() as ChannelException).error)
-
-        assertFalse(repository.hasPendingDisconnectCleanup.value)
-        assertTrue(clearedChannels.isEmpty())
-        assertTrue("FACEBOOK_a" in fakeTokenStore.storage)
-        assertEquals("a", repository.getConnectedChannels().first().single().accountId)
-    }
-
-    @Test
-    fun failedLocalCleanupResumesAfterRestart() = runTest {
-        val type = ChannelType.FACEBOOK
-        repository.connectFacebookSelectedPage(
-            FacebookUserToken("user", 5L, null), FacebookPage("a", "Page A", "page-token"),
-        ).getOrThrow()
-        cleanupFailure = true
-
-        assertTrue(repository.disconnectChannel(type, "a").isFailure)
-        assertTrue(repository.hasPendingDisconnectCleanup.value)
-        assertTrue(fakeTokenStore.storage.isEmpty())
-        val pendingWrite = fakeTokenStore.staged.keys.single()
-        assertTrue(pendingWrite.clearChannelData)
-
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
-            assertEquals(pendingWrite.id, operationId)
-            if (cleanupFailure) throw IOException("Xoá dữ liệu lỗi")
-            clearedChannels.add(channel)
-        }
-        assertTrue(restarted.getConnectedChannels().first().isEmpty())
-        assertTrue(restarted.hasPendingDisconnectCleanup.value)
-
-        cleanupFailure = false
-        assertTrue(restarted.getConnectedChannels().first().isEmpty())
-        assertFalse(restarted.hasPendingDisconnectCleanup.value)
-
-        assertEquals(listOf(type), clearedChannels)
-        assertTrue(fakeTokenStore.staged.isEmpty())
-        assertTrue(fakeAccountStore.saved.isEmpty())
-    }
-
-    @Test
-    fun startupFinishesPendingDisconnectEvenWhenChannelListCannotBeRead() = runTest {
-        val type = ChannelType.FACEBOOK
-        val user = FacebookUserToken("user", 5L, null)
-        repository.connectFacebookSelectedPage(user, FacebookPage("a", "Page A", "page-token")).getOrThrow()
-        cleanupFailure = true
-        assertTrue(repository.disconnectChannel(type, "a").isFailure)
-        val disconnect = fakeTokenStore.staged.keys.single()
-        fakeAccountStore.loadError = true
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
-            assertEquals(disconnect.id, operationId)
-            clearedChannels.add(channel)
-        }
-
-        val load = runCatching { restarted.getConnectedChannels().first() }
-
-        assertEquals(ChannelError.CHANNELS_LOAD_FAILED, (load.exceptionOrNull() as ChannelException).error)
-        assertEquals(listOf(type), clearedChannels)
-        assertTrue(fakeTokenStore.staged.isEmpty())
-        assertFalse(restarted.hasPendingDisconnectCleanup.value)
-    }
-
-    @Test
-    fun startupClearsSharedDataWhileMetadataStoreIsUnavailable() = runTest {
-        val type = ChannelType.FACEBOOK
-        val account = StoredChannelAccount(type, "a", "Page A")
-        val disconnect = PendingChannelWrite("disconnect-a", type, "a", disconnect = true, clearChannelData = true)
-        fakeAccountStore.saved = listOf(account)
-        fakeTokenStore.stageDisconnect(disconnect)
-        fakeAccountStore.loadError = true
-        fakeAccountStore.saveError = true
-        val cleanupAttempts = mutableListOf<Pair<ChannelType, String>>()
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
-            cleanupAttempts.add(channel to operationId)
-        }
-
-        val load = runCatching { restarted.getConnectedChannels().first() }
-
-        assertEquals(ChannelError.CHANNELS_LOAD_FAILED, (load.exceptionOrNull() as ChannelException).error)
-        assertEquals(listOf(type to disconnect.id), cleanupAttempts)
-        assertEquals(listOf(account), fakeAccountStore.saved)
-        assertEquals(setOf(disconnect), fakeTokenStore.staged.keys)
-        assertTrue(restarted.hasPendingDisconnectCleanup.value)
-
-        fakeAccountStore.saveError = false
-        assertTrue(restarted.retryPendingDisconnectCleanup())
-
-        assertEquals(listOf(type to disconnect.id, type to disconnect.id), cleanupAttempts)
-        assertTrue(fakeAccountStore.saved.isEmpty())
-        assertTrue(fakeTokenStore.staged.isEmpty())
-        assertFalse(restarted.hasPendingDisconnectCleanup.value)
-    }
-
-    @Test
-    fun retryPendingDisconnectDoesNotReadChannelListOrFinalizeUnrelatedTokenWrite() = runTest {
-        val type = ChannelType.FACEBOOK
-        val user = FacebookUserToken("user", 5L, null)
-        repository.connectFacebookSelectedPage(user, FacebookPage("a", "Page A", "page-token")).getOrThrow()
-        cleanupFailure = true
-        assertTrue(repository.disconnectChannel(type, "a").isFailure)
-        val disconnect = fakeTokenStore.staged.keys.single()
-
-        val unrelatedWrite = PendingChannelWrite("pending-token", ChannelType.LINKEDIN, "member")
-        fakeTokenStore.stageToken(unrelatedWrite, OAuthToken("member-token", 20L))
-        fakeAccountStore.loadError = true
-        val restarted = ChannelRepositoryImpl(fakeTokenStore, fakeAccountStore) { channel, operationId ->
-            assertEquals(disconnect.id, operationId)
-            clearedChannels.add(channel)
-        }
-
-        assertTrue(restarted.retryPendingDisconnectCleanup())
-
-        assertFalse(restarted.hasPendingDisconnectCleanup.value)
-        assertEquals(listOf(type), clearedChannels)
-        assertEquals(setOf(unrelatedWrite), fakeTokenStore.staged.keys)
-    }
-
-    @Test
-    fun pendingSharedDataCleanupCompletesBeforeSavingAnotherAccountOfTheSameNetwork() = runTest {
-        val type = ChannelType.FACEBOOK
-        val user = FacebookUserToken("user", 5L, null)
-        repository.connectFacebookSelectedPage(user, FacebookPage("a", "Page A", "page-token")).getOrThrow()
-        cleanupFailure = true
-        assertTrue(repository.disconnectChannel(type, "a").isFailure)
-
-        val newPage = FacebookPage("b", "Page B", "new-token")
-        assertTrue(repository.connectFacebookSelectedPage(user, newPage).isFailure)
-        assertTrue(fakeTokenStore.storage.isEmpty())
-
-        cleanupFailure = false
-        facebookSdkLoggedIn = true
-        repository.connectFacebookSelectedPage(user, newPage).getOrThrow()
-
-        assertTrue(facebookSdkLoggedIn)
-        assertFalse(repository.hasPendingDisconnectCleanup.value)
-        assertEquals(listOf(type), clearedChannels)
-        assertEquals(setOf("FACEBOOK_b"), fakeTokenStore.storage.keys)
-        assertEquals("b", repository.getConnectedChannels().first().single().accountId)
     }
 
     @Test

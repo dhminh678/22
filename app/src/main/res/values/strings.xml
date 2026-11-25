@@ -43,7 +43,21 @@
     <string name="channel_subtitle">Connected social media accounts and platform capability statuses</string>
     <string name="channel_connect_facebook">Connect Facebook Page</string>
     <string name="channel_connect_linkedin">Connect LinkedIn</string>
+    <string name="channel_refresh_user_session_expired">Your Facebook sign-in has expired. Sign in again to resume automatic refresh.</string>
+    <string name="channel_refresh_storage_error">Could not save the Facebook refresh. The app will retry.</string>
+    <string name="channel_refresh_network_error">Could not reach Facebook to refresh the connection. The app will retry.</string>
+    <string name="channel_refresh_unavailable">Facebook refresh is temporarily unavailable. The app will retry.</string>
+    <string name="channel_refresh_page_access">Check Facebook Page access for the connections marked below.</string>
+    <string name="channel_retry_page">Retry Page refresh</string>
+    <string name="channel_retry_page_wait">Page refresh is on cooldown. Try again later.</string>
+    <string name="channel_retry_page_sign_in">Sign in with the Facebook account that manages this Page, or reconnect it.</string>
+    <string name="channel_status_page_permission_required">Page access denied. Check your Facebook Page permissions and assigned tasks.</string>
+    <string name="channel_status_page_unlisted">This Page is missing from the current Facebook account’s Page list. Check that you have permission to manage it, then retry or reconnect.</string>
+    <string name="channel_status_reconnect_required">Reconnect required</string>
     <string name="channel_status_expired">Token Expired</string>
+    <string name="channel_reconnect">Reconnect</string>
+    <string name="channel_error_reconnect_account_mismatch">Sign in again with the account that owns this connection.</string>
+    <string name="channel_error_reconnect_unavailable">Reconnect is unavailable because sign-in is not configured in this build.</string>
     <string name="channel_empty_desc">Connect a channel (Facebook Page or LinkedIn) to view platform capability statuses</string>
     <string name="channel_disconnect">Disconnect</string>
     <string name="channel_disconnect_title">Disconnect %1$s?</string>
@@ -99,6 +113,7 @@
     <string name="cap_status_supported">Supported ✅</string>
     <string name="cap_status_requires_perm">Requires Permission ⚠️</string>
     <string name="cap_status_requires_reconnect">Reconnect required</string>
+    <string name="cap_fb_page_token_invalid">The Facebook Page token is no longer valid. Reconnect the Page to use this feature.</string>
     <string name="cap_token_expired">The connection has expired. Sign in again to use this feature.</string>
     <string name="cap_status_handed_off">Manual hand-off ✋</string>
 
@@ -172,4 +187,67 @@
     <!-- Mục API key trong màn Cài đặt. -->
     <string name="api_keys_settings_description">Add, check, replace or delete your own OpenAI and Gemini keys. Keys are encrypted and stored only on this device.</string>
     <string name="api_keys_settings_manage">Manage API keys</string>
+
+    <!-- Chọn model theo loại việc, Issue #54. -->
+    <string name="models_title">Models by task</string>
+    <string name="models_description">Choose the provider and model for each kind of work. Only providers with a saved API key can be selected, and the app never switches provider on its own.</string>
+    <string name="models_manage_keys">Manage API keys</string>
+    <string name="models_loading">Loading model settings…</string>
+    <string name="models_load_failed">Could not load model settings. Reopen this screen to retry.</string>
+    <string name="models_task_write_post">Write posts</string>
+    <string name="models_task_write_post_description">Drafts, rewrites and suggested replies.</string>
+    <string name="models_task_classify">Classify comments</string>
+    <string name="models_task_classify_description">Sorts comments into question, praise, feedback, negative and spam.</string>
+    <string name="models_task_image">Generate images</string>
+    <string name="models_task_image_description">Illustrations for posts. Image models can cost more and need access on your account.</string>
+    <string name="models_model_label">Model</string>
+    <string name="models_model_help">Pick a suggestion or type a model ID. Access depends on your account.</string>
+    <string name="models_save">Save selection</string>
+    <string name="models_reset">Use default</string>
+    <string name="models_status_ready">Ready: %1$s / %2$s</string>
+    <string name="models_status_ready_default">Ready (default): %1$s / %2$s</string>
+    <string name="models_status_needs_key">Needs an API key: add a %1$s key or choose another provider. Nothing is sent until then.</string>
+    <string name="models_status_not_selected">No model selected. The app will use offline image templates.</string>
+    <string name="models_status_invalid">The saved model is not valid for this task. Choose another model.</string>
+    <string name="models_msg_saved">Selection saved.</string>
+    <string name="models_msg_saved_warning">Saved, but this model name does not look like a model for this kind of work. Check that it works with your account.</string>
+    <string name="models_msg_reset">Reset to default.</string>
+    <string name="models_msg_missing_key">This provider has no API key yet. Add one in API keys first.</string>
+    <string name="models_msg_empty">Enter a model ID.</string>
+    <string name="models_msg_too_long">Model ID is too long (at most 128 characters).</string>
+    <string name="models_msg_invalid_format">Model ID may contain only letters, digits and . _ : / -</string>
+    <string name="models_msg_incompatible">This model cannot be used for this kind of work.</string>
+    <string name="models_msg_unsupported_provider">This provider is not supported yet.</string>
+    <string name="models_msg_error">The operation could not be completed. Retry.</string>
+    <!-- Mục chọn model trong màn Cài đặt. -->
+    <string name="models_settings_description">Choose which model writes posts, classifies comments and generates images.</string>
+    <string name="models_settings_manage">Choose models</string>
+
+    <!-- Feature F3: Topic Input -->
+    <string name="compose_header_title">Create New Post</string>
+    <string name="compose_header_subtitle">Provide a brief to guide the AI agent</string>
+    <string name="compose_topic_hint">Topic *</string>
+    <string name="compose_topic_error">Topic cannot be empty</string>
+    <string name="compose_goal_hint">Goal *</string>
+    <string name="compose_goal_error">Goal cannot be empty</string>
+    <string name="compose_audience_hint">Target Audience *</string>
+    <string name="compose_audience_error">Target audience cannot be empty</string>
+    <string name="compose_tone_hint">Tone of Voice *</string>
+    <string name="compose_tone_error">Please select a tone</string>
+    <string name="compose_language_title">Content Language *</string>
+    <string name="compose_language_vi">Vietnamese (VI)</string>
+    <string name="compose_language_en">English (EN)</string>
+    <string name="compose_channels_title">Target Channels *</string>
+    <string name="compose_channels_error">Select at least one target channel</string>
+    <string name="compose_channel_facebook">Facebook Page</string>
+    <string name="compose_channel_linkedin">LinkedIn</string>
+    <string name="action_continue">Continue</string>
+    <string name="compose_submit_success">Brief created successfully</string>
+
+    <!-- Tone options -->
+    <string name="tone_professional">Professional</string>
+    <string name="tone_friendly">Friendly</string>
+    <string name="tone_casual">Casual</string>
+    <string name="tone_inspirational">Inspirational</string>
+    <string name="tone_persuasive">Persuasive</string>
 </resources>

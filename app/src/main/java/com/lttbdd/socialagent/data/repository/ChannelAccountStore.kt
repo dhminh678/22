@@ -21,5 +21,13 @@ data class StoredChannelAccount(
 interface ChannelAccountStore {
     suspend fun load(): List<StoredChannelAccount>
     suspend fun upsert(account: StoredChannelAccount)
+
+    /** Xác minh điều kiện ghi sau khi kho đã sẵn sàng cập nhật metadata. */
+    suspend fun upsertIf(account: StoredChannelAccount, canCommit: () -> Boolean): Boolean {
+        if (!canCommit()) return false
+        upsert(account)
+        return true
+    }
+
     suspend fun remove(type: ChannelType, accountId: String)
 }

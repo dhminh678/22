@@ -10,6 +10,7 @@ data class FacebookUserToken(
     val accessToken: String,
     val expiresAtMillis: Long,
     val grantedScope: String?,
+    val userId: String? = null,
 ) {
     // Không để token lọt vào log qua toString.
     override fun toString(): String =
