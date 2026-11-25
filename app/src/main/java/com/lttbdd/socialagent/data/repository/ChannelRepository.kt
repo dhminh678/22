@@ -2,10 +2,16 @@ package com.lttbdd.socialagent.data.repository
 
 import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.core.model.ChannelType
+import com.lttbdd.socialagent.data.model.FACEBOOK_REFRESH_RETRY
+import com.lttbdd.socialagent.data.model.FacebookRefreshCheck
+import com.lttbdd.socialagent.data.model.FacebookRefreshOutcome
+import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.data.model.FacebookPage
+import com.lttbdd.socialagent.data.model.FacebookPageAccessIssue
 import com.lttbdd.socialagent.data.model.FacebookUserToken
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * Repository quản lý việc kết nối kênh mạng xã hội qua OAuth.
@@ -40,6 +46,7 @@ interface ChannelRepository {
         exchangeCode: String,
         state: String,
         codeVerifier: String,
+        expectedAccountId: String? = null,
     ): Result<ChannelAccount> = Result.failure(UnsupportedOperationException("Chưa hỗ trợ đăng nhập LinkedIn qua BFF"))
 
     /**
@@ -68,6 +75,44 @@ interface ChannelRepository {
     /** Hồ sơ Facebook là true, Page là false, chưa xác định được là null. */
     suspend fun isFacebookProfile(accountId: String): Boolean? = null
 
+    suspend fun needsFacebookReconnect(accountId: String): Boolean = false
+
+    /** Hạn phiên người cấp quyền cho Page, độc lập với hạn của Page token. */
+    suspend fun getFacebookPageSessionExpiresAt(accountId: String): Long? = null
+
+    /** Lỗi truy cập Graph của Page token hiện tại, theo ID Page. */
+    fun observeFacebookPageAccessIssues(): Flow<Map<String, FacebookPageAccessIssue>> = flowOf(emptyMap())
+
+    /** Kiểm tra bằng Page token đã lưu, không phụ thuộc vào phiên người dùng trong Meta SDK. */
+    suspend fun checkFacebookPageAccess() {}
+
+    /**
+     * Gọi SDK qua [refresh] khi có kênh đủ điều kiện. Callback trả null nếu phiên đã đổi.
+     * [sessionVersion] nhận diện phiên đang hoạt động để kiểm tra lại trước khi ghi.
+     */
+    suspend fun refreshFacebookChannels(
+        userId: String?,
+        expiresBefore: Long,
+        sessionVersion: () -> Long? = { null },
+        refresh: suspend () -> FacebookUserToken?,
+    ): FacebookRefreshCheck = FacebookRefreshCheck(
+        FacebookRefreshOutcome(
+            skipped = if (userId == null) FacebookRefreshSkip.NO_SDK_SESSION else FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS,
+        ),
+        FACEBOOK_REFRESH_RETRY,
+    )
+
+    /** Thử lại một Page bằng [user] đã đọc từ phiên SDK có thế hệ [version]. */
+    suspend fun retryFacebookPage(
+        pageId: String,
+        user: FacebookUserToken,
+        version: Long,
+        sessionVersion: () -> Long?,
+    ): FacebookRefreshCheck = FacebookRefreshCheck(
+        FacebookRefreshOutcome(skipped = FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS),
+        FACEBOOK_REFRESH_RETRY,
+    )
+
     /**
      * Lấy danh sách Facebook Page mà người dùng quản lý (Graph API `/me/accounts`).
      * Thất bại (lỗi mạng, thiếu quyền `pages_show_list`) trả về Result.failure.
@@ -76,7 +121,7 @@ interface ChannelRepository {
         Result.success(emptyList())
 
     /**
-     * Kết nối một Page đã chọn: lưu Page access token, quyền thật và hạn thật lấy từ phiên [user] (Meta SDK).
+     * Kết nối một Page đã chọn: lưu Page access token và quyền từ phiên [user] (Meta SDK).
      */
     suspend fun connectFacebookSelectedPage(
         user: FacebookUserToken,

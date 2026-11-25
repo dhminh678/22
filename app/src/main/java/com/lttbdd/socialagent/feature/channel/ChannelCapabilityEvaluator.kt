@@ -4,6 +4,7 @@ import com.lttbdd.socialagent.R
 import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.ConnectionStatus
+import com.lttbdd.socialagent.data.model.FacebookPageAccessIssue
 
 enum class CapabilityStatusType {
     SUPPORTED,
@@ -43,6 +44,7 @@ object ChannelCapabilityEvaluator {
         scopeString: String?,
         pageTasks: List<String>? = null,
         isFacebookProfile: Boolean? = null,
+        pageAccessIssue: FacebookPageAccessIssue? = null,
     ): List<CapabilityItemUiState> {
         val scopes = parseScopes(scopeString)
 
@@ -50,19 +52,28 @@ object ChannelCapabilityEvaluator {
             ChannelType.FACEBOOK -> evaluateFacebook(scopes, pageTasks?.toSet(), isFacebookProfile)
             ChannelType.LINKEDIN -> evaluateLinkedIn(scopes)
         }
-        if (account.status != ConnectionStatus.TOKEN_EXPIRED) return items
+        val pageIssue = pageAccessIssue.takeIf { account.type == ChannelType.FACEBOOK && isFacebookProfile != true }
+        val requiresReconnect = account.status == ConnectionStatus.TOKEN_EXPIRED ||
+            pageIssue == FacebookPageAccessIssue.RECONNECT_REQUIRED
+        if (!requiresReconnect && pageIssue == null) return items
 
         return items.map { item ->
-            when (item.statusType) {
-                CapabilityStatusType.HANDED_OFF, CapabilityStatusType.NOT_SUPPORTED -> item
-                else -> item.copy(
+            when {
+                item.statusType == CapabilityStatusType.HANDED_OFF ||
+                    item.statusType == CapabilityStatusType.NOT_SUPPORTED -> item
+                requiresReconnect -> item.copy(
                     statusTextRes = R.string.cap_status_requires_reconnect,
                     statusType = CapabilityStatusType.REQUIRES_RECONNECT,
-                    captionRes = if (item.captionRes == R.string.cap_fb_account_type_unknown) {
-                        item.captionRes
-                    } else {
-                        R.string.cap_token_expired
+                    captionRes = when {
+                        pageIssue == FacebookPageAccessIssue.RECONNECT_REQUIRED -> R.string.cap_fb_page_token_invalid
+                        item.captionRes == R.string.cap_fb_account_type_unknown -> item.captionRes
+                        else -> R.string.cap_token_expired
                     },
+                )
+                else -> item.copy(
+                    statusTextRes = R.string.cap_status_requires_perm,
+                    statusType = CapabilityStatusType.REQUIRES_PERMISSION,
+                    captionRes = R.string.channel_status_page_permission_required,
                 )
             }
         }

@@ -42,7 +42,21 @@
     <string name="channel_subtitle">Các tài khoản đã kết nối và trạng thái khả năng hỗ trợ theo nền tảng</string>
     <string name="channel_connect_facebook">Kết nối Facebook Page</string>
     <string name="channel_connect_linkedin">Kết nối LinkedIn</string>
+    <string name="channel_refresh_user_session_expired">Phiên đăng nhập Facebook đã hết hạn. Đăng nhập lại để tiếp tục tự làm mới.</string>
+    <string name="channel_refresh_storage_error">Chưa lưu được kết quả làm mới Facebook. Ứng dụng sẽ thử lại.</string>
+    <string name="channel_refresh_network_error">Chưa kết nối được với Facebook để làm mới. Ứng dụng sẽ thử lại.</string>
+    <string name="channel_refresh_unavailable">Chưa làm mới được kết nối Facebook. Ứng dụng sẽ thử lại.</string>
+    <string name="channel_refresh_page_access">Hãy kiểm tra quyền truy cập Facebook đối với các Trang được đánh dấu bên dưới.</string>
+    <string name="channel_retry_page">Thử làm mới Trang</string>
+    <string name="channel_retry_page_wait">Đang trong thời gian chờ. Hãy thử làm mới Trang sau.</string>
+    <string name="channel_retry_page_sign_in">Hãy đăng nhập bằng tài khoản Facebook quản lý Trang này hoặc kết nối lại.</string>
+    <string name="channel_status_page_permission_required">Không có quyền truy cập Trang. Hãy kiểm tra quyền và nhiệm vụ được cấp trên Trang Facebook.</string>
+    <string name="channel_status_page_unlisted">Trang này không có trong danh sách Trang của tài khoản Facebook hiện tại. Hãy kiểm tra quyền quản lý Trang, rồi thử làm mới hoặc kết nối lại.</string>
+    <string name="channel_status_reconnect_required">Cần kết nối lại</string>
     <string name="channel_status_expired">Token đã hết hạn</string>
+    <string name="channel_reconnect">Kết nối lại</string>
+    <string name="channel_error_reconnect_account_mismatch">Hãy đăng nhập lại bằng tài khoản có quyền kết nối kênh này.</string>
+    <string name="channel_error_reconnect_unavailable">Bản này chưa cấu hình đăng nhập nên không thể kết nối lại.</string>
     <string name="channel_empty_desc">Kết nối một kênh (Facebook Page hoặc LinkedIn) để xem trạng thái chức năng theo từng nền tảng</string>
     <string name="channel_disconnect">Ngắt kết nối</string>
     <string name="channel_disconnect_title">Ngắt kết nối %1$s?</string>
@@ -98,6 +112,7 @@
     <string name="cap_status_supported">Hỗ trợ ✅</string>
     <string name="cap_status_requires_perm">Cần cấp thêm quyền ⚠️</string>
     <string name="cap_status_requires_reconnect">Cần kết nối lại</string>
+    <string name="cap_fb_page_token_invalid">Token Trang Facebook không còn hợp lệ. Hãy kết nối lại Trang để dùng tính năng này.</string>
     <string name="cap_token_expired">Phiên kết nối đã hết hạn. Hãy đăng nhập lại để dùng tính năng này.</string>
     <string name="cap_status_handed_off">Bàn giao thủ công ✋</string>
 

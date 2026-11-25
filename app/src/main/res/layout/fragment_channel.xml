@@ -86,6 +86,13 @@
         android:layout_gravity="center_horizontal"
         android:layout_marginTop="8dp"
         android:text="@string/channel_retry_cleanup"
+    <TextView
+        android:id="@+id/tvFacebookRefreshStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:accessibilityLiveRegion="polite"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
         android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView

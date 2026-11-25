@@ -1,7 +1,10 @@
 package com.lttbdd.socialagent.feature.channel
 
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -9,8 +12,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.viewModels
+import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -18,14 +22,18 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.lttbdd.socialagent.BuildConfig
 import com.lttbdd.socialagent.R
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.facebook.AccessToken
 import com.facebook.CallbackManager
 import com.facebook.FacebookCallback
 import com.facebook.FacebookException
+import com.facebook.login.LoginBehavior
 import com.facebook.login.LoginManager
 import com.facebook.login.LoginResult
 import com.lttbdd.socialagent.core.model.ChannelAccount
 import com.lttbdd.socialagent.data.model.FacebookUserToken
+import com.lttbdd.socialagent.core.model.ChannelType
+import com.lttbdd.socialagent.data.model.FacebookPage
+import com.lttbdd.socialagent.data.model.FacebookRefreshIssue
+import com.lttbdd.socialagent.data.model.FacebookRefreshSkip
 import com.lttbdd.socialagent.databinding.FragmentChannelBinding
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
@@ -34,7 +42,7 @@ import kotlinx.coroutines.launch
 /**
  * Fragment hiển thị và quản lý màn hình Kênh của tôi (F1).
  * Nguồn tham chiếu:
- * - RFC 8252 Section 8.1: không dùng WebView nhúng. Facebook đăng nhập bằng Meta SDK (LoginManager),
+ * - Facebook đăng nhập bằng Meta SDK (LoginManager), ưu tiên Custom Tabs ở chế độ web.
  * - LinkedIn mở trình duyệt hệ thống rồi nhận deep link từ BFF (xem ChannelViewModel.startLinkedInLogin).
  * - AGENTS.md: ViewModel expose StateFlow, Fragment collect bằng repeatOnLifecycle(STARTED), _binding nullable.
  */
@@ -44,16 +52,18 @@ class ChannelFragment : Fragment() {
     private var _binding: FragmentChannelBinding? = null
     private val binding get() = _binding!!
 
-    private val viewModel: ChannelViewModel by viewModels()
+    private val viewModel: ChannelViewModel by activityViewModels()
 
     private var disconnectDialog: androidx.appcompat.app.AlertDialog? = null
     private var facebookPageDialog: androidx.appcompat.app.AlertDialog? = null
     private var displayedFacebookPagePicker: FacebookPagePicker? = null
+    private var facebookReconnectAccountId: String? = null
+    private var cancelledFacebookReconnectAccountId: String? = null
     private lateinit var adapter: ChannelAdapter
     private val facebookCallbackManager: CallbackManager = CallbackManager.Factory.create()
     private val facebookLoginManager = BuildConfig.FACEBOOK_APP_ID
         .takeIf { it.isNotBlank() && !it.contains("SOCIAL_AGENT") }
-        ?.let { LoginManager.getInstance() }
+        ?.let { LoginManager.getInstance().setLoginBehavior(LoginBehavior.WEB_ONLY) }
 
     // Cấu hình App ID cố định trong APK. Khi có cấu hình, đăng ký ở mỗi lần tạo Fragment
     // để nhận lại kết quả đăng nhập qua CallbackManager sau khi Activity được tạo lại.
@@ -66,18 +76,36 @@ class ChannelFragment : Fragment() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        facebookReconnectAccountId = savedInstanceState?.getString(FACEBOOK_RECONNECT_ACCOUNT)
+        cancelledFacebookReconnectAccountId = savedInstanceState?.getString(CANCELLED_FACEBOOK_RECONNECT_ACCOUNT)
         facebookLoginManager?.registerCallback(
             facebookCallbackManager,
             object : FacebookCallback<LoginResult> {
                 override fun onSuccess(result: LoginResult) {
-                    viewModel.onFacebookLoggedIn(result.accessToken.toUserToken())
+                    invalidateFacebookSdkSession()
+                    val expectedAccountId = facebookReconnectAccountId
+                    facebookReconnectAccountId = null
+                    viewModel.onFacebookLoggedIn(result.accessToken.toUserToken(), expectedAccountId)
                 }
 
-                override fun onCancel() = viewModel.onFacebookLoginCancelled()
+                override fun onCancel() {
+                    cancelledFacebookReconnectAccountId = facebookReconnectAccountId
+                    facebookReconnectAccountId = null
+                    viewModel.onFacebookLoginCancelled()
+                }
 
-                override fun onError(error: FacebookException) = viewModel.onFacebookLoginFailed()
+                override fun onError(error: FacebookException) {
+                    facebookReconnectAccountId = null
+                    viewModel.onFacebookLoginFailed()
+                }
             },
         )
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(FACEBOOK_RECONNECT_ACCOUNT, facebookReconnectAccountId)
+        outState.putString(CANCELLED_FACEBOOK_RECONNECT_ACCOUNT, cancelledFacebookReconnectAccountId)
     }
 
     override fun onDestroy() {
@@ -103,11 +131,10 @@ class ChannelFragment : Fragment() {
         observeUiState()
     }
 
-    private fun AccessToken.toUserToken() = FacebookUserToken(
-        accessToken = token,
-        expiresAtMillis = expires.time,
-        grantedScope = permissions.filterNotNull().sorted().joinToString(",").ifEmpty { null },
-    )
+    override fun onResume() {
+        super.onResume()
+        viewModel.onChannelScreenResumed()
+    }
 
     private fun launchFacebookLogin(useAnotherAccount: Boolean = false) {
         val contract = facebookLoginContract ?: return
@@ -122,12 +149,20 @@ class ChannelFragment : Fragment() {
         } catch (_: FacebookException) {
             viewModel.onFacebookLoginFailed()
         }
+    private fun loginWithAnotherFacebookAccount() {
+        // Đăng xuất phiên SDK để màn Facebook Login không tự dùng lại tài khoản cũ.
+        facebookReconnectAccountId = cancelledFacebookReconnectAccountId
+        cancelledFacebookReconnectAccountId = null
+        facebookLoginManager?.logOut()
+        invalidateFacebookSdkSession()
+        facebookLoginLauncher?.launch(FACEBOOK_PERMISSIONS)
     }
 
     private fun openInBrowser(url: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
         } catch (_: ActivityNotFoundException) {
+            viewModel.onLinkedInBrowserUnavailable()
             Toast.makeText(requireContext(), R.string.channel_linkedin_no_browser, Toast.LENGTH_LONG).show()
         }
     }
@@ -140,6 +175,7 @@ class ChannelFragment : Fragment() {
                 launchFacebookLogin(useAnotherAccount = true)
             }
             .setNegativeButton(R.string.channel_close, null)
+            .setOnDismissListener { cancelledFacebookReconnectAccountId = null }
             .show()
     }
 
@@ -151,6 +187,12 @@ class ChannelFragment : Fragment() {
             getTasksForAccount = { account -> viewModel.getTasksForAccount(account) },
             isFacebookProfile = viewModel::isFacebookProfile,
             onDisconnect = ::confirmDisconnect,
+            reconnect = ::reconnectAccount,
+            needsFacebookReconnect = viewModel::needsFacebookReconnect,
+            facebookPageAccessIssue = viewModel::facebookPageAccessIssue,
+            isFacebookPageUnlisted = viewModel::isFacebookPageUnlisted,
+            canRetryFacebookPage = viewModel::canRetryFacebookPage,
+            retryFacebookPage = ::retryFacebookPage,
         )
         binding.rvChannels.layoutManager = LinearLayoutManager(requireContext())
         binding.rvChannels.adapter = adapter
@@ -169,12 +211,54 @@ class ChannelFragment : Fragment() {
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.channel_disconnect) { _, _ -> viewModel.disconnectChannel(account) }
             .show()
+    private fun retryFacebookPage(account: ChannelAccount) {
+        if (!viewModel.canRetryFacebookPage(account)) return
+        val current = currentFacebookSdkToken()
+        if (current == null) {
+            Toast.makeText(requireContext(), R.string.channel_retry_page_sign_in, Toast.LENGTH_SHORT).show()
+            return
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            val check = viewModel.retryFacebookPage(
+                account.accountId, current.user, current.version, ::facebookSdkSessionVersion,
+            )
+            val message = when (check.outcome.skipped) {
+                FacebookRefreshSkip.COOLDOWN -> R.string.channel_retry_page_wait
+                FacebookRefreshSkip.NO_ELIGIBLE_CHANNELS,
+                FacebookRefreshSkip.NO_SDK_SESSION,
+                FacebookRefreshSkip.SDK_SESSION_CHANGED,
+                FacebookRefreshSkip.WAITING_FOR_SESSION -> R.string.channel_retry_page_sign_in
+                else -> null
+            }
+            message?.let { Toast.makeText(requireContext(), it, Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    private fun reconnectAccount(account: ChannelAccount) {
+        when (account.type) {
+            ChannelType.FACEBOOK -> {
+                if (!binding.btnConnectFacebook.isEnabled) return
+                val launcher = facebookLoginLauncher ?: return toastReconnectUnavailable()
+                facebookReconnectAccountId = account.accountId
+                launcher.launch(FACEBOOK_PERMISSIONS)
+            }
+            ChannelType.LINKEDIN -> {
+                if (!binding.btnConnectLinkedIn.isEnabled) return
+                if (viewModel.isLinkedInDemoMode()) return toastReconnectUnavailable()
+                viewModel.startLinkedInLogin(account.accountId)
+            }
+        }
+    }
+
+    private fun toastReconnectUnavailable() {
+        Toast.makeText(requireContext(), R.string.channel_error_reconnect_unavailable, Toast.LENGTH_LONG).show()
     }
 
     private fun setupListeners() {
         binding.btnRetryLoadChannels.setOnClickListener { viewModel.retryLoadChannels() }
         binding.btnRetryDisconnectCleanup.setOnClickListener { viewModel.retryDisconnectCleanup() }
         binding.btnConnectFacebook.setOnClickListener {
+            facebookReconnectAccountId = null
             if (facebookLoginLauncher == null) {
                 showDemoModeNotice("FACEBOOK_APP_ID")
                 viewModel.connectFacebookDemo(getString(R.string.channel_demo_facebook_name))
@@ -195,8 +279,17 @@ class ChannelFragment : Fragment() {
     }
 
     private fun observeUiState() {
+        if (facebookLoginManager != null) {
+            viewLifecycleOwner.lifecycleScope.launch {
+                viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    viewModel.monitorFacebookPageAccess()
+                }
+            }
+        }
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { monitorTokenExpiry() }
+                launch { viewModel.facebookRefreshIssues.collect(::renderFacebookRefreshIssues) }
                 launch {
                     viewModel.pagePicker.collect(::renderFacebookPagePicker)
                 }
@@ -227,6 +320,44 @@ class ChannelFragment : Fragment() {
     }
 
     private fun render(state: ChannelUiState, pendingCleanup: Boolean) {
+    private suspend fun monitorTokenExpiry() {
+        val context = requireContext()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_TIME_CHANGED) viewModel.recheckTokenExpiry()
+            }
+        }
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(Intent.ACTION_TIME_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        try {
+            viewModel.monitorTokenExpiry()
+        } finally {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
+    private fun renderFacebookRefreshIssues(issues: Set<FacebookRefreshIssue>) {
+        val message = when {
+            FacebookRefreshIssue.USER_SESSION_EXPIRED in issues -> R.string.channel_refresh_user_session_expired
+            FacebookRefreshIssue.STORAGE in issues -> R.string.channel_refresh_storage_error
+            FacebookRefreshIssue.NETWORK in issues -> R.string.channel_refresh_network_error
+            FacebookRefreshIssue.SDK_UNAVAILABLE in issues ||
+                FacebookRefreshIssue.PAGES_UNAVAILABLE in issues ||
+                FacebookRefreshIssue.TIMEOUT in issues ||
+                FacebookRefreshIssue.RATE_LIMITED in issues ||
+                FacebookRefreshIssue.PROVIDER_UNAVAILABLE in issues -> R.string.channel_refresh_unavailable
+            FacebookRefreshIssue.PAGE_NOT_RETURNED in issues -> R.string.channel_refresh_page_access
+            else -> null
+        }
+        binding.tvFacebookRefreshStatus.visibility = if (message == null) View.GONE else View.VISIBLE
+        message?.let { binding.tvFacebookRefreshStatus.setText(it) }
+    }
+
+    private fun render(state: ChannelUiState) {
         val loadFailed = state == ChannelUiState.LoadFailed
         val loading = state is ChannelUiState.Loading
         val canRetryCleanup = !loading && pendingCleanup
@@ -299,6 +430,8 @@ class ChannelFragment : Fragment() {
     }
 
     private companion object {
+        const val CANCELLED_FACEBOOK_RECONNECT_ACCOUNT = "cancelled_facebook_reconnect_account"
+        const val FACEBOOK_RECONNECT_ACCOUNT = "facebook_reconnect_account"
         /** Quyền xin khi đăng nhập Facebook; quyền thật được cấp nằm trong AccessToken.permissions. */
         val FACEBOOK_PERMISSIONS = listOf(
             "public_profile",

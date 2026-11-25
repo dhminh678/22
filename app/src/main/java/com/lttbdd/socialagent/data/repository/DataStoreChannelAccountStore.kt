@@ -29,9 +29,18 @@ class DataStoreChannelAccountStore(
     }
 
     override suspend fun upsert(account: StoredChannelAccount) {
+        upsertIf(account) { true }
+    }
+
+    override suspend fun upsertIf(account: StoredChannelAccount, canCommit: () -> Boolean): Boolean {
+        var committed = false
         context.channelAccountDataStore.edit { preferences ->
-            preferences[key] = ChannelAccountMetadata.upsert(preferences[key], account)
+            if (canCommit()) {
+                preferences[key] = ChannelAccountMetadata.upsert(preferences[key], account)
+                committed = true
+            }
         }
+        return committed
     }
 
     override suspend fun remove(type: ChannelType, accountId: String) {
