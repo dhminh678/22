@@ -55,14 +55,6 @@
             android:text="@string/channel_reconnect"
             android:visibility="gone" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnRetryFacebookPage"
-            style="?attr/materialButtonOutlinedStyle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/channel_retry_page"
-            android:visibility="gone" />
-
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

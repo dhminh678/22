@@ -305,85 +305,6 @@ class ChannelRepositoryNetworkTest {
     }
 
     @Test
-    fun manualRetryUpdatesOnlyTheRequestedPageDuringAutomaticCooldown() = runTest {
-        val oldUser = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
-        val session = oldUser.copy(accessToken = "sdk-current", expiresAtMillis = Long.MAX_VALUE)
-        repository.connectFacebookSelectedPage(oldUser, FacebookPage("target", "Target", "old-target")).getOrThrow()
-        repository.connectFacebookSelectedPage(oldUser, FacebookPage("peer", "Peer", "old-peer")).getOrThrow()
-        handler = { 200 to """{"data":[{"id":"peer","name":"Peer","access_token":"auto-peer"}]}""" }
-
-        val first = repository.refreshFacebookChannels("owner", expiresBefore = 2L, sessionVersion = { 1L }) { session }
-        assertEquals(setOf("target"), first.outcome.retryablePageIds)
-        assertEquals(mapOf("target" to FacebookRefreshIssue.PAGE_NOT_RETURNED), first.outcome.issuesByAccountId)
-        handler = { request ->
-            check(request.url.queryParameter("after") == null)
-            200 to """
-                {"data":[{"id":"target","name":"Target","access_token":"retry-target"},
-                         {"id":"peer","name":"Peer","access_token":"other-peer"}],
-                 "paging":{"next":"https://graph.facebook.com/me/accounts?after=next","cursors":{"after":"next"}}}
-            """.trimIndent()
-        }
-        val retry = repository.retryFacebookPage("target", session, version = 1L, sessionVersion = { 1L })
-
-        assertEquals(listOf("target"), retry.outcome.updated.map { it.accountId })
-        assertEquals("retry-target", store.storage["FACEBOOK_target"]?.accessToken)
-        assertEquals("auto-peer", store.storage["FACEBOOK_peer"]?.accessToken)
-        assertEquals(2, requests.size)
-        assertEquals("Bearer sdk-current", requests.last().header("Authorization"))
-        assertEquals(FacebookRefreshSkip.COOLDOWN, repository.refreshFacebookChannels("owner", 2L, sessionVersion = { 1L }) {
-            error("Retry riêng không được reset lịch SDK.")
-        }.outcome.skipped)
-    }
-
-    @Test
-    fun pageRetriesUseCurrentTokenWhileAutomaticSdkRefreshIsWaiting() = runTest {
-        val savedUser = FacebookUserToken("original-user", 1L, null, "owner")
-        val current = savedUser.copy(accessToken = "current-user", expiresAtMillis = Long.MAX_VALUE)
-        repository.connectFacebookSelectedPage(savedUser, FacebookPage("first", "First", "old-first")).getOrThrow()
-        repository.connectFacebookSelectedPage(savedUser, FacebookPage("second", "Second", "old-second")).getOrThrow()
-        handler = {
-            200 to """{"data":[{"id":"first","name":"First","access_token":"new-first"},
-                         {"id":"second","name":"Second","access_token":"new-second"}]}"""
-        }
-        val sdkStarted = CompletableDeferred<Unit>()
-        val sdkResult = CompletableDeferred<FacebookUserToken>()
-        var sdkCalls = 0
-        val automatic = async {
-            repository.refreshFacebookChannels("owner", 2L, sessionVersion = { 1L }) {
-                sdkCalls++
-                sdkStarted.complete(Unit)
-                sdkResult.await()
-            }
-        }
-        try {
-            sdkStarted.await()
-            for (page in listOf("first", "second")) {
-                val retry = repository.retryFacebookPage(page, current, version = 1L, sessionVersion = { 1L })
-                assertEquals(listOf(page), retry.outcome.updated.map { it.accountId })
-                assertEquals("new-$page", store.storage["FACEBOOK_$page"]?.accessToken)
-            }
-            assertEquals(1, sdkCalls)
-            assertFalse(automatic.isCompleted)
-            assertEquals(listOf("Bearer current-user", "Bearer current-user"), requests.map { it.header("Authorization") })
-        } finally {
-            sdkResult.complete(current.copy(accessToken = "renewed-user"))
-        }
-        automatic.await()
-    }
-
-    @Test
-    fun pageRetrySkipsGraphWhenItsSdkTokenSnapshotIsFromAnOldSession() = runTest {
-        val current = FacebookUserToken("old-session", Long.MAX_VALUE, null, "owner")
-        repository.connectFacebookSelectedPage(current, FacebookPage("page", "Page", "old-page")).getOrThrow()
-
-        val result = repository.retryFacebookPage("page", current, version = 1L, sessionVersion = { 2L })
-
-        assertEquals(FacebookRefreshSkip.SDK_SESSION_CHANGED, result.outcome.skipped)
-        assertTrue(requests.isEmpty())
-        assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
-    }
-
-    @Test
     fun upstreamFailureIsNotTreatedAsAMissingPage() = runTest {
         val user = FacebookUserToken("old-user", 1L, "pages_show_list", "owner")
         repository.connectFacebookSelectedPage(user, FacebookPage("page", "Page", "old-page")).getOrThrow()
@@ -394,8 +315,6 @@ class ChannelRepositoryNetworkTest {
         }.outcome
 
         assertEquals(mapOf("page" to FacebookRefreshIssue.PROVIDER_UNAVAILABLE), outcome.issuesByAccountId)
-        assertEquals(setOf("page"), outcome.retryablePageIds)
-        assertTrue(outcome.confirmedPageIds.isEmpty())
         assertTrue(outcome.reconnectAccountIds.isEmpty())
         assertEquals("old-page", store.storage["FACEBOOK_page"]?.accessToken)
     }

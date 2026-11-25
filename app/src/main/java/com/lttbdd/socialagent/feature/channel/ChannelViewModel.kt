@@ -71,8 +71,6 @@ class ChannelViewModel @Inject constructor(
     private val legacyFacebookPages = mutableSetOf<String>()
     private var facebookPageAccessIssues = emptyMap<String, FacebookPageAccessIssue>()
     private val invalidFacebookSessions = mutableSetOf<String>()
-    private val unlistedFacebookPages = mutableSetOf<String>()
-    private val retryableFacebookPages = mutableSetOf<String>()
     private val _facebookRefreshState = MutableStateFlow<FacebookRefreshCheck?>(null)
     internal val facebookRefreshState = _facebookRefreshState.asStateFlow()
     private val _facebookRefreshIssues = MutableStateFlow<Set<FacebookRefreshIssue>>(emptySet())
@@ -179,8 +177,6 @@ class ChannelViewModel @Inject constructor(
                     val facebookIds = channels.filter { it.type == ChannelType.FACEBOOK }.map { it.accountId }.toSet()
                     facebookPageSessionExpiries.keys.retainAll(facebookIds)
                     invalidFacebookSessions.retainAll(facebookIds)
-                    unlistedFacebookPages.retainAll(facebookIds)
-                    retryableFacebookPages.retainAll(facebookIds)
                     knownChannels = channels
                     publishChannels()
                 }
@@ -200,8 +196,6 @@ class ChannelViewModel @Inject constructor(
             channels + demoChannels,
             tokenRevision,
             channels.filter(::needsFacebookReconnect).map { it.accountId }.toSet(),
-            unlistedFacebookPages.toSet(),
-            retryableFacebookPages.toSet(),
             channels.filter(::needsFacebookPagePermission).map { it.accountId }.toSet(),
         )
     }
@@ -247,15 +241,6 @@ class ChannelViewModel @Inject constructor(
         repository.refreshFacebookChannels(userId, clock() + FACEBOOK_REFRESH_WINDOW, sessionVersion, refresh)
     }
 
-    internal suspend fun retryFacebookPage(
-        pageId: String,
-        user: FacebookUserToken,
-        version: Long,
-        sessionVersion: () -> Long?,
-    ): FacebookRefreshCheck = updateFacebookRefreshState(user.userId) {
-        repository.retryFacebookPage(pageId, user, version, sessionVersion)
-    }
-
     /** Đồng bộ kết quả mới với màn kênh và giữ thông báo lỗi trong thời gian chờ thử lại. */
     private suspend fun updateFacebookRefreshState(
         userId: String?,
@@ -273,12 +258,6 @@ class ChannelViewModel @Inject constructor(
                 val outcome = it.outcome
                 outcome.updated.forEach { account -> invalidFacebookSessions.remove(account.accountId) }
                 invalidFacebookSessions.addAll(outcome.reconnectAccountIds)
-                unlistedFacebookPages.removeAll(outcome.confirmedPageIds)
-                retryableFacebookPages.removeAll(outcome.confirmedPageIds + outcome.reconnectAccountIds)
-                retryableFacebookPages.addAll(outcome.retryablePageIds)
-                unlistedFacebookPages.addAll(outcome.issuesByAccountId.filterValues { issue ->
-                    issue == FacebookRefreshIssue.PAGE_NOT_RETURNED
-                }.keys)
                 outcome.updated.forEach { account -> loadTokenDetails(account) }
                 if (outcome.updated.isNotEmpty()) tokenRevision++
                 if (_uiState.value is ChannelUiState.Success) publishChannels()
@@ -351,13 +330,6 @@ class ChannelViewModel @Inject constructor(
             delay(FACEBOOK_REFRESH_RETRY)
         }
     }
-
-    internal fun isFacebookPageUnlisted(account: ChannelAccount): Boolean =
-        account.type == ChannelType.FACEBOOK && account.accountId in unlistedFacebookPages
-
-    internal fun canRetryFacebookPage(account: ChannelAccount): Boolean =
-        account.type == ChannelType.FACEBOOK && account.accountId in retryableFacebookPages &&
-            !needsFacebookReconnect(account)
 
     private fun scopeKey(account: ChannelAccount) = "${account.type.name}_${account.accountId}"
 
@@ -595,8 +567,6 @@ class ChannelViewModel @Inject constructor(
         result.onSuccess { account ->
             if (account.type == ChannelType.FACEBOOK) {
                 invalidFacebookSessions.remove(account.accountId)
-                unlistedFacebookPages.remove(account.accountId)
-                retryableFacebookPages.remove(account.accountId)
             }
             loadTokenDetails(account)
             val updatedChannels = knownChannels

@@ -13,7 +13,6 @@ enum class FacebookRefreshIssue {
     ACCOUNT_MISMATCH,
     STORAGE,
     PAGES_UNAVAILABLE,
-    PAGE_NOT_RETURNED,
 }
 
 enum class FacebookRefreshSkip {
@@ -31,8 +30,6 @@ data class FacebookRefreshOutcome(
     val reconnectAccountIds: Set<String> = emptySet(),
     val skipped: FacebookRefreshSkip? = null,
     val issuesByAccountId: Map<String, FacebookRefreshIssue> = emptyMap(),
-    val confirmedPageIds: Set<String> = emptySet(),
-    val retryablePageIds: Set<String> = emptySet(),
     val batchIssues: Set<FacebookRefreshIssue> = issues - issuesByAccountId.values.toSet(),
 )
 

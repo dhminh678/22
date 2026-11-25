@@ -23,9 +23,6 @@ class ChannelAdapter(
     private val reconnect: (ChannelAccount) -> Unit,
     private val needsFacebookReconnect: (ChannelAccount) -> Boolean,
     private val facebookPageAccessIssue: (ChannelAccount) -> FacebookPageAccessIssue?,
-    private val isFacebookPageUnlisted: (ChannelAccount) -> Boolean,
-    private val canRetryFacebookPage: (ChannelAccount) -> Boolean,
-    private val retryFacebookPage: (ChannelAccount) -> Unit,
 ) : ListAdapter<ChannelAccount, ChannelAdapter.ChannelViewHolder>(ChannelDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChannelViewHolder {
@@ -36,7 +33,7 @@ class ChannelAdapter(
         )
         return ChannelViewHolder(
             binding, getScopeForAccount, getTasksForAccount, isFacebookProfile, reconnect,
-            needsFacebookReconnect, facebookPageAccessIssue, isFacebookPageUnlisted, canRetryFacebookPage, retryFacebookPage,
+            needsFacebookReconnect, facebookPageAccessIssue,
         )
     }
 
@@ -52,9 +49,6 @@ class ChannelAdapter(
         private val reconnect: (ChannelAccount) -> Unit,
         private val needsFacebookReconnect: (ChannelAccount) -> Boolean,
         private val facebookPageAccessIssue: (ChannelAccount) -> FacebookPageAccessIssue?,
-        private val isFacebookPageUnlisted: (ChannelAccount) -> Boolean,
-        private val canRetryFacebookPage: (ChannelAccount) -> Boolean,
-        private val retryFacebookPage: (ChannelAccount) -> Unit,
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(account: ChannelAccount) {
@@ -70,12 +64,10 @@ class ChannelAdapter(
             val needsReconnect = needsFacebookReconnect(account)
             val pageAccessIssue = facebookPageAccessIssue(account)
             val pagePermissionRequired = pageAccessIssue == FacebookPageAccessIssue.PERMISSION_REQUIRED
-            val pageUnlisted = isFacebookPageUnlisted(account)
-            val showReconnect = needsReconnect || pageUnlisted || account.status == ConnectionStatus.TOKEN_EXPIRED
+            val showReconnect = needsReconnect || account.status == ConnectionStatus.TOKEN_EXPIRED
             val statusRes = when {
                 needsReconnect -> R.string.channel_status_reconnect_required
                 pagePermissionRequired -> R.string.channel_status_page_permission_required
-                pageUnlisted -> R.string.channel_status_page_unlisted
                 account.status == ConnectionStatus.TOKEN_EXPIRED -> R.string.channel_status_expired
                 account.status == ConnectionStatus.CONNECTED -> R.string.status_connected
                 else -> R.string.status_disconnected
@@ -83,8 +75,6 @@ class ChannelAdapter(
             binding.tvStatus.setText(statusRes)
             binding.btnReconnect.isVisible = showReconnect
             binding.btnReconnect.setOnClickListener { reconnect(account) }
-            binding.btnRetryFacebookPage.isVisible = canRetryFacebookPage(account)
-            binding.btnRetryFacebookPage.setOnClickListener { retryFacebookPage(account) }
             binding.tvStatus.setTextColor(
                 ContextCompat.getColor(
                     context,

@@ -125,14 +125,6 @@ private fun classifySdkFailure(exception: FacebookException?): FacebookRefreshEx
 
 private val facebookSdkSession = FacebookSdkSession<AccessToken>()
 
-internal data class FacebookSdkTokenSnapshot(val user: FacebookUserToken, val version: Long)
-
-internal fun currentFacebookSdkToken(): FacebookSdkTokenSnapshot? {
-    val token = AccessToken.getCurrentAccessToken() ?: return null
-    val version = checkNotNull(facebookSdkSession.version(token))
-    return FacebookSdkTokenSnapshot(token.toUserToken(), version)
-}
-
 internal fun facebookSdkSessionVersion(): Long? =
     facebookSdkSession.version(AccessToken.getCurrentAccessToken())
 
