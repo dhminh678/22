@@ -144,7 +144,6 @@ class ReviewDraftsViewModel @Inject constructor(
                 else -> R.string.review_publish_in_progress
             }
             is EnqueueResult.AlreadyPublished -> R.string.review_publish_already_published
-            EnqueueResult.DestinationRequired -> R.string.review_publish_destination_required
             EnqueueResult.NotApproved -> R.string.review_publish_blocked_unapproved
             EnqueueResult.DraftNotFound -> R.string.review_draft_action_failed
         }

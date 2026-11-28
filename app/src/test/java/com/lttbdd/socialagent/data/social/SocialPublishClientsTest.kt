@@ -3,6 +3,7 @@ package com.lttbdd.socialagent.data.social
 import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.Draft
 import com.lttbdd.socialagent.core.model.PublishResult
+import com.lttbdd.socialagent.core.social.SocialChannelClient
 import com.lttbdd.socialagent.core.publishing.PublishErrorReason
 import com.lttbdd.socialagent.data.model.OAuthToken
 import kotlinx.coroutines.test.runTest
@@ -260,7 +261,7 @@ class SocialPublishClientsTest {
         val client = facebook(fixture)
         val key = client.requirePublishKey()
         pages = pages + ("999" to OAuthToken("other-page", null, isFacebookProfile = false))
-        assertNull(client.newPublishKey())
+        assertNull(destinations.newKey(client.type))
         assertTrue(client.publish(draft(client.type), key) is PublishResult.Success)
         assertEquals("/v26.0/123/feed", fixture.requests.single().url.encodedPath)
 
@@ -285,7 +286,7 @@ class SocialPublishClientsTest {
 
     private fun linkedIn(fixture: FakeHttp) = LinkedInClient(destinations, fixture.http)
 
-    private suspend fun DestinationBoundClient.requirePublishKey(): String = requireNotNull(newPublishKey())
+    private suspend fun SocialChannelClient.requirePublishKey(): String = requireNotNull(destinations.newKey(type))
 
     private fun draft(type: ChannelType) = Draft("draft", "topic", type, "Bài đã duyệt", approved = true)
 

@@ -30,9 +30,6 @@ sealed interface EnqueueResult {
 
     data object DraftNotFound : EnqueueResult
 
-    /** Chưa xác định được một tài khoản đích duy nhất để đăng bài. */
-    data object DestinationRequired : EnqueueResult
-
     /** Bản nháp chưa được duyệt: agent không được tự đăng (yêu cầu F4, quy tắc 6 của AGENTS.md). */
     data object NotApproved : EnqueueResult
 }

@@ -16,7 +16,7 @@ import com.lttbdd.socialagent.databinding.ItemPublishTopicBinding
 class PublishStatusAdapter(
     private val onPublishAll: (topicId: String) -> Unit,
     private val onPublishChannel: (draftId: String) -> Unit,
-    private val onConfirmPublished: (postId: String, channel: ChannelType) -> Unit,
+    private val onConfirmPublished: (postId: String) -> Unit,
     private val onRequeue: (postId: String) -> Unit,
     private val onOpenPost: (url: String) -> Unit,
 ) : ListAdapter<TopicPublishItem, PublishStatusAdapter.TopicViewHolder>(DiffCallback) {
@@ -91,7 +91,7 @@ class PublishStatusAdapter(
             val postId = state.postId
             row.confirmActions.isVisible = item.action == ChannelAction.CONFIRM_OUTCOME && postId != null
             if (postId != null) {
-                row.btnConfirmPublished.setOnClickListener { onConfirmPublished(postId, state.channel) }
+                row.btnConfirmPublished.setOnClickListener { onConfirmPublished(postId) }
                 row.btnRequeue.setOnClickListener { onRequeue(postId) }
             }
         }

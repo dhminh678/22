@@ -2,6 +2,7 @@ package com.lttbdd.socialagent.di
 
 import android.content.Context
 import com.lttbdd.socialagent.core.social.SocialChannelClient
+import com.lttbdd.socialagent.data.publishing.PublishKeyFactory
 import com.lttbdd.socialagent.data.social.FacebookClient
 import com.lttbdd.socialagent.data.social.LinkedInClient
 import com.lttbdd.socialagent.data.social.PublishDestinations
@@ -18,6 +19,10 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 internal object SocialPublishingModule {
+    @Provides
+    fun publishKeyFactory(destinations: PublishDestinations): PublishKeyFactory =
+        PublishKeyFactory(destinations::newKey)
+
     @Provides
     @Singleton
     fun publishHttp(): PublishHttp = PublishHttp()

@@ -4,7 +4,6 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lttbdd.socialagent.R
-import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.PostStatus
 import com.lttbdd.socialagent.core.publishing.ChannelPublishState
 import com.lttbdd.socialagent.core.publishing.EnqueueResult
@@ -63,19 +62,16 @@ class PublishStatusViewModel @Inject constructor(
         viewModelScope.launch {
             var queued = 0
             var failed = 0
-            var needsDestination = false
             for (target in targets) {
                 when (safeEnqueue(target.state.draftId)) {
                     is EnqueueResult.Queued -> queued++
                     // Đã ở hàng đợi hoặc đã đăng (bấm hai lần, hoặc màn hình chưa kịp cập nhật): không phải lỗi.
                     is EnqueueResult.AlreadyActive, is EnqueueResult.AlreadyPublished -> Unit
-                    EnqueueResult.DestinationRequired -> needsDestination = true
                     else -> failed++
                 }
             }
             send(
                 when {
-                    needsDestination -> R.string.publish_status_some_destinations_required
                     failed > 0 -> R.string.publish_status_action_failed
                     queued == 0 -> R.string.review_publish_already_queued
                     skippedUnapproved -> R.string.publish_status_queued_some_unapproved
@@ -98,7 +94,6 @@ class PublishStatusViewModel @Inject constructor(
                             R.string.review_publish_in_progress
                         }
                     is EnqueueResult.AlreadyPublished -> R.string.review_publish_already_published
-                    EnqueueResult.DestinationRequired -> R.string.review_publish_destination_required
                     EnqueueResult.NotApproved -> R.string.review_publish_blocked_unapproved
                     EnqueueResult.DraftNotFound, null -> R.string.publish_status_action_failed
                 },
@@ -106,24 +101,10 @@ class PublishStatusViewModel @Inject constructor(
         }
     }
 
-    fun onConfirmPublished(postId: String) = confirmPublished(postId, null)
-
-    /** Trả false để hộp thoại giữ nguyên dữ liệu nhập khi URL không hợp lệ. */
-    fun onConfirmPublished(postId: String, channel: ChannelType, permalink: String): Boolean {
-        val url = permalink.trim()
-        if (url.isNotEmpty() && !isPermalinkForChannel(url, channel)) return false
-        confirmPublished(postId, url.ifEmpty { null })
-        return true
-    }
-
-    private fun confirmPublished(postId: String, permalink: String?) {
+    fun onConfirmPublished(postId: String) {
         viewModelScope.launch {
-            val result = safeCall {
-                if (permalink == null) tracker.confirmPublished(postId)
-                else tracker.confirmPublishedWithPermalink(postId, permalink)
-            }
             send(
-                when (result) {
+                when (safeCall { tracker.confirmPublished(postId) }) {
                     true -> R.string.publish_status_marked_published
                     false -> R.string.publish_status_state_changed
                     null -> R.string.publish_status_action_failed
@@ -188,37 +169,6 @@ class PublishStatusViewModel @Inject constructor(
             if (state.status != PostStatus.PUBLISHED) return null
             // Không trim: AC #40 chặn link có khoảng trắng ở bất kỳ đâu, kể cả đầu/cuối (review của Minh ở #106).
             val url = state.url ?: return null
-            return url.takeIf { parseWebUrl(it) != null }
-        }
-
-        private fun isPermalinkForChannel(url: String, channel: ChannelType): Boolean {
-            val uri = parseWebUrl(url) ?: return false
-            if (!uri.scheme.equals("https", ignoreCase = true) || uri.rawUserInfo != null ||
-                (uri.port != -1 && uri.port != 443)
-            ) return false
-            val host = uri.host.lowercase()
-            val path = uri.rawPath.removeSuffix("/")
-            return when (channel) {
-                ChannelType.FACEBOOK -> host in FACEBOOK_POST_HOSTS && isFacebookPostPath(uri, path)
-                ChannelType.LINKEDIN -> LINKEDIN_POST_HOST.matches(host) &&
-                    (LINKEDIN_FEED_UPDATE.matches(path) || LINKEDIN_PUBLIC_POST.matches(path))
-            }
-        }
-
-        private fun isFacebookPostPath(uri: URI, path: String): Boolean = when (path) {
-            "/permalink.php", "/story.php" -> uri.hasFacebookId("story_fbid")
-            "/photo.php", "/photo" -> uri.hasFacebookId("fbid")
-            "/watch", "/video.php" -> uri.hasFacebookId("v")
-            else -> FACEBOOK_POST_PATHS.any { it.matches(path) }
-        }
-
-        private fun URI.hasFacebookId(parameter: String): Boolean {
-            val prefix = "$parameter="
-            val values = rawQuery.orEmpty().split('&').filter { it == parameter || it.startsWith(prefix) }
-            return values.singleOrNull()?.removePrefix(prefix)?.let(FACEBOOK_POST_ID::matches) == true
-        }
-
-        private fun parseWebUrl(url: String): URI? {
             if (url.isEmpty() || url.any(Char::isWhitespace)) return null
             // Parse thay vì chỉ so tiền tố, để chặn link thiếu host như `https:///post/1` hay `https://?q=1`.
             val uri = try {
@@ -227,29 +177,10 @@ class PublishStatusViewModel @Inject constructor(
                 return null
             }
             val scheme = uri.scheme?.lowercase()
-            return uri.takeIf { scheme in WEB_SCHEMES && !it.host.isNullOrEmpty() }
+            return url.takeIf { scheme in WEB_SCHEMES && !uri.host.isNullOrEmpty() }
         }
 
         private val WEB_SCHEMES = setOf("https", "http")
-        private val FACEBOOK_POST_HOSTS = setOf(
-            "facebook.com", "www.facebook.com", "m.facebook.com", "mbasic.facebook.com", "web.facebook.com",
-        )
-        private const val FACEBOOK_ID = "(?:[0-9]+|pfbid[A-Za-z0-9]+)"
-        private const val FACEBOOK_OWNER = "[A-Za-z0-9][A-Za-z0-9._-]*"
-        private val FACEBOOK_POST_ID = Regex(FACEBOOK_ID)
-        private val FACEBOOK_POST_PATHS = listOf(
-            Regex("(?:/$FACEBOOK_OWNER)?/(?:posts|photos|videos|activity)/$FACEBOOK_ID"),
-            Regex("(?:/$FACEBOOK_OWNER)?/photos/a\\.$FACEBOOK_ID/$FACEBOOK_ID"),
-            Regex("/groups/$FACEBOOK_OWNER/(?:posts|permalink)/$FACEBOOK_ID"),
-            Regex("/(?:watch|reel)/$FACEBOOK_ID"),
-            Regex("/share/[pvr]/[A-Za-z0-9]+"),
-        )
-        private val LINKEDIN_POST_HOST = Regex("(?:(?:www|[a-z]{2})\\.)?linkedin\\.com")
-        private const val URN_COLON = "(?::|%3[aA])"
-        private val LINKEDIN_FEED_UPDATE =
-            Regex("/feed/update/urn${URN_COLON}li${URN_COLON}(?:activity|share|ugcPost)$URN_COLON[0-9]+")
-        private val LINKEDIN_PUBLIC_POST =
-            Regex("/posts/[A-Za-z0-9_%.~-]+-(?:activity|share|ugcPost)-[0-9]+(?:-[A-Za-z0-9_-]+)?")
 
         /** Lý do hiển thị (#39): chỉ cho bài lỗi và bài đang chờ thử lại; bài đã đăng có thể còn lý do cũ. */
         @StringRes

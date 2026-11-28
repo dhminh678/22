@@ -279,22 +279,6 @@ class PublishStatusViewModelTest {
         assertEquals(R.string.review_publish_already_queued, nextMessage())
     }
 
-    @Test
-    fun `publish all reports missing destination and still queues the other channel`() = runTest {
-        collectState()
-        tracker.topics.value = listOf(
-            topic("t1", state(PostStatus.DRAFT, draftId = "fb"), state(PostStatus.DRAFT, draftId = "li")),
-        )
-        queue.results["fb"] = EnqueueResult.DestinationRequired
-        advanceUntilIdle()
-
-        viewModel.onPublishAll("t1")
-        advanceUntilIdle()
-
-        assertEquals(listOf("fb", "li"), queue.enqueued)
-        assertEquals(R.string.publish_status_some_destinations_required, nextMessage())
-    }
-
     // ---------- Từng kênh ----------
 
     @Test
@@ -305,7 +289,6 @@ class PublishStatusViewModelTest {
             EnqueueResult.AlreadyActive("p", PostStatus.PUBLISHING) to R.string.review_publish_in_progress,
             EnqueueResult.AlreadyPublished("p", null) to R.string.review_publish_already_published,
             EnqueueResult.NotApproved to R.string.review_publish_blocked_unapproved,
-            EnqueueResult.DestinationRequired to R.string.review_publish_destination_required,
             EnqueueResult.DraftNotFound to R.string.publish_status_action_failed,
         )
         cases.forEach { (result, message) ->
@@ -328,86 +311,6 @@ class PublishStatusViewModelTest {
         advanceUntilIdle()
         assertEquals(R.string.publish_status_state_changed, nextMessage())
         assertEquals(listOf("p", "p"), tracker.confirmed)
-    }
-
-    @Test
-    fun `manual confirmation forwards a valid permalink and rejects invalid links`() = runTest {
-        val url = "https://www.facebook.com/permalink.php?story_fbid=456&id=123"
-        for (invalid in listOf("https://facebook.com.evil.test/posts/456", "https://linkedin.com/feed/update/123", "javascript:alert(1)")) {
-            assertFalse(viewModel.onConfirmPublished("p", ChannelType.FACEBOOK, invalid))
-        }
-        advanceUntilIdle()
-        assertTrue(tracker.confirmed.isEmpty())
-        assertTrue(tracker.confirmedPermalinks.isEmpty())
-
-        assertTrue(viewModel.onConfirmPublished("p", ChannelType.FACEBOOK, "  $url  "))
-        assertTrue(viewModel.onConfirmPublished("without-link", ChannelType.FACEBOOK, " "))
-        advanceUntilIdle()
-
-        assertEquals(listOf("p" to url), tracker.confirmedPermalinks)
-        assertEquals(listOf("without-link"), tracker.confirmed)
-        assertEquals(R.string.publish_status_marked_published, nextMessage())
-        assertEquals(R.string.publish_status_marked_published, nextMessage())
-    }
-
-    @Test
-    fun `manual confirmation rejects non post pages and incomplete post routes`() = runTest {
-        val invalidLinks = mapOf(
-            ChannelType.FACEBOOK to listOf(
-                "https://www.facebook.com/settings",
-                "https://developers.facebook.com/documentation/",
-                "https://developers.facebook.com/posts/456",
-                "https://www.facebook.com/permalink.php?id=123",
-                "https://www.facebook.com/permalink.php?story_fbid=456&story_fbid=789",
-                "https://www.facebook.com/page/posts/",
-                "https://www.facebook.com/page/photos/albums",
-                "https://www.facebook.com/watch/?v=",
-                "https://www.facebook.com/photo.php?fbid=not-an-id",
-            ),
-            ChannelType.LINKEDIN to listOf(
-                "https://www.linkedin.com/mypreferences/",
-                "https://www.linkedin.com/feed/update/",
-                "https://www.linkedin.com/feed/update/urn:li:person:123/",
-                "https://www.linkedin.com/feed/update/urn:li:activity:123/extra",
-                "https://www.linkedin.com/posts/activity-123",
-                "https://www.linkedin.com/posts/alice-profile/",
-            ),
-        )
-        invalidLinks.forEach { (channel, links) ->
-            links.forEach { url -> assertFalse(url, viewModel.onConfirmPublished("p", channel, url)) }
-        }
-        advanceUntilIdle()
-
-        assertTrue(tracker.confirmed.isEmpty())
-        assertTrue(tracker.confirmedPermalinks.isEmpty())
-    }
-
-    @Test
-    fun `manual confirmation accepts supported Facebook and LinkedIn post links`() = runTest {
-        val validLinks = mapOf(
-            ChannelType.FACEBOOK to listOf(
-                "https://m.facebook.com/story.php?story_fbid=456&id=123",
-                "https://www.facebook.com/page/posts/pfbid0AbCdEf/",
-                "https://www.facebook.com/groups/123/permalink/456/",
-                "https://www.facebook.com/photo.php?fbid=456&set=a.123",
-                "https://www.facebook.com/page/photos/a.123/456/",
-                "https://www.facebook.com/page/videos/456/",
-                "https://www.facebook.com/page/activity/456/",
-                "https://www.facebook.com/watch/?v=456",
-                "https://www.facebook.com/share/p/1AbCdEf/",
-            ),
-            ChannelType.LINKEDIN to listOf(
-                "https://www.linkedin.com/feed/update/urn:li:share:123/",
-                "https://www.linkedin.com/feed/update/urn%3Ali%3AugcPost%3A123/?trk=public",
-                "https://uk.linkedin.com/posts/alice_example-activity-123-Ab_4/",
-            ),
-        )
-        validLinks.forEach { (channel, links) ->
-            links.forEach { url -> assertTrue(url, viewModel.onConfirmPublished("p", channel, url)) }
-        }
-        advanceUntilIdle()
-
-        assertEquals(validLinks.values.flatten().map { "p" to it }, tracker.confirmedPermalinks)
     }
 
     @Test
@@ -469,7 +372,6 @@ class PublishStatusViewModelTest {
     private class FakeTracker : PublishTracker {
         val topics = MutableStateFlow<List<TopicPublishState>>(emptyList())
         val confirmed = mutableListOf<String>()
-        val confirmedPermalinks = mutableListOf<Pair<String, String>>()
         val requeued = mutableListOf<String>()
         var confirmResult = true
         var error: Exception? = null
@@ -479,11 +381,6 @@ class PublishStatusViewModelTest {
         override suspend fun confirmPublished(postId: String): Boolean {
             error?.let { throw it }
             confirmed += postId
-            return confirmResult
-        }
-
-        override suspend fun confirmPublishedWithPermalink(postId: String, url: String): Boolean {
-            confirmedPermalinks += postId to url
             return confirmResult
         }
 

@@ -27,10 +27,8 @@ internal class FacebookClient(
     private val destinations: PublishDestinations,
     private val http: PublishHttp,
     private val readImage: suspend (String) -> RequestBody?,
-) : DestinationBoundClient, SocialChannelClient by FakeSocialChannelClient(ChannelType.FACEBOOK) {
+) : SocialChannelClient by FakeSocialChannelClient(ChannelType.FACEBOOK) {
     override val type = ChannelType.FACEBOOK
-
-    override suspend fun newPublishKey(): String? = destinations.newKey(type)
 
     override suspend fun publish(draft: Draft, idempotencyKey: String): PublishResult {
         if (!draft.approved || draft.channel != type) return PublishResult.PermanentError(PublishErrorReason.CONTENT_REJECTED)

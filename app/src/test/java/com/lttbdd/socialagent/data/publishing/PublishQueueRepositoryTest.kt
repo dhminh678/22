@@ -17,7 +17,6 @@ import com.lttbdd.socialagent.core.model.PublishResult
 import com.lttbdd.socialagent.core.publishing.EnqueueResult
 import com.lttbdd.socialagent.core.social.SocialChannelClient
 import com.lttbdd.socialagent.data.model.OAuthToken
-import com.lttbdd.socialagent.data.social.DestinationBoundClient
 import com.lttbdd.socialagent.data.social.PublishDestinations
 import com.lttbdd.socialagent.data.social.PublishingAccounts
 import kotlinx.coroutines.CompletableDeferred
@@ -72,7 +71,12 @@ class PublishQueueRepositoryTest {
     private fun repository(
         postDao: PostDao = db.postDao(),
         clients: Set<SocialChannelClient> = setOf(facebook),
-    ) = PublishQueueRepository(db, postDao, db.draftDao(), clients, scheduler) { nowMillis }
+        keyFactory: PublishKeyFactory? = null,
+    ) = if (keyFactory == null) {
+        PublishQueueRepository(db, postDao, db.draftDao(), clients, scheduler) { nowMillis }
+    } else {
+        PublishQueueRepository(db, postDao, db.draftDao(), clients, scheduler, keyFactory) { nowMillis }
+    }
 
     private suspend fun saveDraft(
         id: String = "d1",
@@ -118,15 +122,12 @@ class PublishQueueRepositoryTest {
     @Test
     fun `worker uses original destination key after repository restart`() = runTest {
         saveDraft()
-        val client = object : DestinationBoundClient, SocialChannelClient by facebook {
-            override suspend fun newPublishKey() = "bound-to-page"
-        }
-
-        val id = queuedId(repository(clients = setOf(client)))
+        val id = queuedId(repository(keyFactory = PublishKeyFactory { "bound-to-page" }))
         assertEquals("bound-to-page", post(id).idempotencyKey)
         assertEquals(0, facebook.calls)
 
-        val result = repository(clients = setOf(client)).processQueue()
+        val result = repository(keyFactory = PublishKeyFactory { error("Không tạo lại khóa khi xử lý hàng đợi") })
+            .processQueue()
 
         assertEquals(1, result.published)
         assertEquals(listOf("bound-to-page"), facebook.keys)
@@ -148,15 +149,15 @@ class PublishQueueRepositoryTest {
             saveDraft(id = draftId, channel = channel)
             var accounts = connected
             val destinations = PublishDestinations(PublishingAccounts { accounts })
-            val client = object : DestinationBoundClient, SocialChannelClient by ScriptedClient(channel) {
-                override suspend fun newPublishKey() = destinations.newKey(type)
-            }
-            val repo = repository(clients = setOf(client))
+            val repo = repository(
+                clients = setOf(ScriptedClient(channel)),
+                keyFactory = PublishKeyFactory(destinations::newKey),
+            )
             val scheduledBefore = scheduler.calls
 
-            assertEquals(EnqueueResult.DestinationRequired, repo.enqueue(draftId))
+            assertTrue(runCatching { repo.enqueue(draftId) }.exceptionOrNull() is IllegalStateException)
             accounts = emptyList()
-            assertEquals(EnqueueResult.DestinationRequired, repo.enqueue(draftId))
+            assertTrue(runCatching { repo.enqueue(draftId) }.exceptionOrNull() is IllegalStateException)
             assertTrue(db.postDao().getByDraft(draftId).isEmpty())
             assertEquals(scheduledBefore, scheduler.calls)
 

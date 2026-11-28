@@ -6,13 +6,13 @@ import com.lttbdd.socialagent.core.database.dao.DraftDao
 import com.lttbdd.socialagent.core.database.dao.PostDao
 import com.lttbdd.socialagent.core.database.entity.PostEntity
 import com.lttbdd.socialagent.core.database.toModel
+import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.model.PostStatus
 import com.lttbdd.socialagent.core.model.PublishResult
 import com.lttbdd.socialagent.core.publishing.EnqueueResult
 import com.lttbdd.socialagent.core.publishing.PublishErrorReason
 import com.lttbdd.socialagent.core.publishing.PublishQueue
 import com.lttbdd.socialagent.core.social.SocialChannelClient
-import com.lttbdd.socialagent.data.social.DestinationBoundClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
@@ -22,6 +22,11 @@ import javax.net.ssl.SSLHandshakeException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Tạo khóa cho lần đăng mới. Trả null nếu chưa xác định được đích đăng. */
+fun interface PublishKeyFactory {
+    suspend fun create(channel: ChannelType): String?
+}
 
 /** Nguồn thời gian, tách ra để test điều khiển được. */
 fun interface PublishClock {
@@ -63,6 +68,7 @@ class PublishQueueRepository @Inject constructor(
     private val draftDao: DraftDao,
     private val clients: Set<@JvmSuppressWildcards SocialChannelClient>,
     private val scheduler: PublishScheduler,
+    private val keyFactory: PublishKeyFactory = PublishKeyFactory { UUID.randomUUID().toString() },
     private val clock: PublishClock,
 ) : PublishQueue {
 
@@ -76,9 +82,8 @@ class PublishQueueRepository @Inject constructor(
      */
     override suspend fun enqueue(draftId: String): EnqueueResult {
         // Khôi phục tài khoản ngoài Room transaction để tránh lồng thao tác lưu.
-        val boundClients = clients.filterIsInstance<DestinationBoundClient>()
-        val channel = if (boundClients.isEmpty()) null else draftDao.getById(draftId)?.takeIf { it.approved }?.channel
-        val publishKey = boundClients.firstOrNull { it.type == channel }?.newPublishKey()
+        val channel = draftDao.getById(draftId)?.takeIf { it.approved }?.channel
+        val publishKey = channel?.let { keyFactory.create(it) }
         val result = database.withTransaction {
             val draft = draftDao.getById(draftId) ?: return@withTransaction EnqueueResult.DraftNotFound
             if (!draft.approved) return@withTransaction EnqueueResult.NotApproved
@@ -91,11 +96,8 @@ class PublishQueueRepository @Inject constructor(
                 return@withTransaction EnqueueResult.AlreadyPublished(it.id, it.url)
             }
 
-            val idempotencyKey = if (boundClients.any { it.type == draft.channel }) {
-                publishKey?.takeIf { channel == draft.channel }
-                    ?: return@withTransaction EnqueueResult.DestinationRequired
-            } else {
-                UUID.randomUUID().toString()
+            val idempotencyKey = checkNotNull(publishKey?.takeIf { channel == draft.channel }) {
+                "Cần đúng một tài khoản hợp lệ cho kênh đăng bài"
             }
             val now = clock.nowMillis()
             val post = PostEntity(

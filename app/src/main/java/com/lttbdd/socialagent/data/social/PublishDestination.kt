@@ -1,17 +1,11 @@
 package com.lttbdd.socialagent.data.social
 
 import com.lttbdd.socialagent.core.model.ChannelType
-import com.lttbdd.socialagent.core.social.SocialChannelClient
 import com.lttbdd.socialagent.data.model.OAuthToken
 import com.lttbdd.socialagent.data.repository.ChannelRepositoryImpl
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
-
-/** Gắn đích vào khoá hàng đợi để lần thử lại không thể chuyển sang tài khoản khác. */
-internal interface DestinationBoundClient : SocialChannelClient {
-    suspend fun newPublishKey(): String?
-}
 
 internal fun interface PublishingAccounts {
     suspend fun load(type: ChannelType): List<Pair<String, OAuthToken>>
@@ -20,6 +14,7 @@ internal fun interface PublishingAccounts {
 internal class PublishDestinations(private val accounts: PublishingAccounts) {
     @Inject constructor(repository: ChannelRepositoryImpl) : this(PublishingAccounts(repository::readPublishingAccounts))
 
+    /** Gắn đích vào khoá hàng đợi để lần thử lại không thể chuyển sang tài khoản khác. */
     suspend fun newKey(type: ChannelType): String? {
         val account = accounts.load(type).filter { (id, token) ->
             when (type) {

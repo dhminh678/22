@@ -279,7 +279,6 @@
     <string name="review_publish_already_queued">Bản nháp này đã nằm trong hàng đợi đăng bài.</string>
     <string name="review_publish_in_progress">Bản nháp này đang được đăng hoặc đang chờ bạn xác nhận kết quả.</string>
     <string name="review_publish_already_published">Bản nháp này đã được đăng trước đó.</string>
-    <string name="review_publish_destination_required">Hãy kết nối một tài khoản có thể đăng bài hoặc chỉ giữ một tài khoản như vậy trên kênh này.</string>
 
     <!-- Feature F4: Xem trước theo kênh, sửa tay & đếm ký tự (Issue #34) -->
     <string name="preview_header_title">Xem trước &amp; Sửa bài</string>
@@ -357,10 +356,6 @@
     <string name="publish_status_needs_approval_hint">Duyệt bản nháp này ở màn Duyệt bài trước khi đăng.</string>
     <string name="publish_status_needs_confirmation_hint">Không rõ bài đã lên hay chưa. Hãy kiểm tra trên kênh rồi chọn bên dưới.</string>
     <string name="publish_status_confirm_published">Bài đã lên</string>
-    <string name="publish_status_permalink_title">Xác nhận bài đã đăng</string>
-    <string name="publish_status_permalink_message">Nếu có liên kết bài gốc, hãy dán vào ô bên dưới để mở lại từ màn hình Trạng thái đăng.</string>
-    <string name="publish_status_permalink_hint">Liên kết bài viết (không bắt buộc)</string>
-    <string name="publish_status_permalink_invalid">Nhập liên kết HTTPS của bài viết trên kênh này hoặc để trống.</string>
     <string name="publish_status_confirm_not_published">Chưa lên, đăng lại</string>
     <string name="publish_status_requeue_dialog_title">Đăng lại bài này?</string>
     <string name="publish_status_requeue_dialog_message">Chỉ tiếp tục nếu bạn đã kiểm tra trên kênh và không thấy bài. Nếu không, bài có thể bị đăng hai lần.</string>
@@ -388,5 +383,4 @@
     <string name="publish_error_storage">Không ghi được vào bộ nhớ máy.</string>
     <string name="publish_error_unknown">Kênh báo lỗi khi đăng bài.</string>
     <string name="publish_status_action_failed">Không cập nhật được hàng đợi đăng bài. Vui lòng thử lại.</string>
-    <string name="publish_status_some_destinations_required">Một số bản nháp chưa được đưa vào hàng đợi. Mỗi kênh cần đúng một tài khoản có thể đăng bài đã kết nối.</string>
 </resources>

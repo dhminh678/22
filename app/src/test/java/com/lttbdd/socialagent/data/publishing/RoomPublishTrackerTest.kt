@@ -175,23 +175,6 @@ class RoomPublishTrackerTest {
         assertEquals(PostStatus.PUBLISHED, db.postDao().getById(postId)!!.status)
     }
 
-    @Test
-    fun `manual confirmation saves the permalink without a remote post id`() = runTest {
-        db.draftDao().upsert(draft("fb", "t1"))
-        val queue = queue()
-        val tracker = RoomPublishTracker(db.draftDao(), db.postDao(), queue)
-        val postId = (queue.enqueue("fb") as EnqueueResult.Queued).postId
-        val url = "https://www.facebook.com/permalink.php?story_fbid=456&id=123"
-        db.postDao().update(db.postDao().getById(postId)!!.copy(status = PostStatus.PUBLISHING, outcomeUnknown = true))
-
-        assertTrue(tracker.confirmPublishedWithPermalink(postId, url))
-
-        val post = requireNotNull(db.postDao().getById(postId))
-        assertEquals(PostStatus.PUBLISHED, post.status)
-        assertEquals(null, post.remotePostId)
-        assertEquals(url, tracker.observeTopics().first().single().channels.single().url)
-    }
-
     private fun List<com.lttbdd.socialagent.core.publishing.TopicPublishState>.statuses() =
         single().channels.map { it.status }
 
