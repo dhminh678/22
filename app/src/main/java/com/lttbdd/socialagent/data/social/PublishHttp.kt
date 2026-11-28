@@ -101,13 +101,12 @@ internal fun retryAfterMillis(header: String?, now: Long): Long? {
     }
 }
 
-internal fun httpRetry(status: Int, header: String?, now: Long): PublishResult.RetryableError? {
-    val reason = when (status) {
-        429 -> RATE_LIMITED
-        in 500..599 -> SERVER_ERROR
-        else -> return null
-    }
-    return PublishResult.RetryableError(reason, retryAfterMillis(header, now))
+internal fun checkPublishHttpStatus(status: Int, header: String?, now: Long): PublishResult.RetryableError? {
+    // Máy chủ có thể đã tạo bài trước khi trả lỗi 5xx. Hàng đợi xử lý IOException
+    // tại đây như kết quả chưa rõ và giữ bài ở trạng thái chờ xác nhận.
+    if (status in 500..599) throw IOException("Kết quả đăng bài chưa rõ (HTTP $status).")
+    if (status != 429) return null
+    return PublishResult.RetryableError(RATE_LIMITED, retryAfterMillis(header, now))
 }
 
 /**
@@ -124,7 +123,7 @@ internal fun publishError(
     body: JsonObject?,
     now: Long,
 ): PublishResult {
-    httpRetry(status, header, now)?.let { return it }
+    checkPublishHttpStatus(status, header, now)?.let { return it }
     val reason = if (channel == ChannelType.FACEBOOK) {
         val error = body?.get("error") as? JsonObject
         val code = error?.get("code").text()?.toIntOrNull()
@@ -133,7 +132,8 @@ internal fun publishError(
             code == 102 || code == 190 || status == 401 -> AUTH_EXPIRED
             code == 506 -> DUPLICATE_CONTENT
             code in graphRateLimits -> return PublishResult.RetryableError(RATE_LIMITED, retryAfterMillis(header, now))
-            code == 1 || code == 2 || code == 368 ->
+            code == 1 || code == 2 -> throw IOException("Kết quả đăng Facebook chưa rõ.")
+            code == 368 ->
                 return PublishResult.RetryableError(SERVER_ERROR, retryAfterMillis(header, now))
             code == 3 || code == 10 || (code != null && code in 200..299) || status == 403 -> PERMISSION_DENIED
             else -> CONTENT_REJECTED

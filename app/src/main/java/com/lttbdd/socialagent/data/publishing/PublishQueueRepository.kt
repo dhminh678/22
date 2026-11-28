@@ -81,43 +81,64 @@ class PublishQueueRepository @Inject constructor(
      * cùng một transaction. Bài cũ [PostStatus.FAILED] không chặn — người dùng được đăng lại với khoá mới.
      */
     override suspend fun enqueue(draftId: String): EnqueueResult {
-        // Khôi phục tài khoản ngoài Room transaction để tránh lồng thao tác lưu.
-        val channel = draftDao.getById(draftId)?.takeIf { it.approved }?.channel
-        val publishKey = channel?.let { keyFactory.create(it) }
-        val result = database.withTransaction {
-            val draft = draftDao.getById(draftId) ?: return@withTransaction EnqueueResult.DraftNotFound
-            if (!draft.approved) return@withTransaction EnqueueResult.NotApproved
-
-            val existing = postDao.getByDraft(draftId)
-            existing.firstOrNull { it.status in ACTIVE_STATUSES }?.let {
-                return@withTransaction EnqueueResult.AlreadyActive(it.id, it.status)
-            }
-            existing.firstOrNull { it.status == PostStatus.PUBLISHED }?.let {
-                return@withTransaction EnqueueResult.AlreadyPublished(it.id, it.url)
+        while (true) {
+            val channel = when (val check = database.withTransaction { checkEnqueue(draftId) }) {
+                is EnqueueCheck.Blocked -> return check.result
+                is EnqueueCheck.Ready -> check.channel
             }
 
-            val idempotencyKey = checkNotNull(publishKey?.takeIf { channel == draft.channel }) {
-                "Cần đúng một tài khoản hợp lệ cho kênh đăng bài"
-            }
-            val now = clock.nowMillis()
-            val post = PostEntity(
-                id = UUID.randomUUID().toString(),
-                draftId = draftId,
-                channel = draft.channel,
-                status = PostStatus.QUEUED,
-                idempotencyKey = idempotencyKey,
-                remotePostId = null,
-                url = null,
-                errorMessage = null,
-                attemptCount = 0,
-                createdAtMillis = now,
-                updatedAtMillis = now,
-            )
-            postDao.insertIfAbsent(post)
-            EnqueueResult.Queued(post.id)
+            // Đọc tài khoản ngoài transaction: khôi phục OAuth có thể cần ghi DB.
+            val publishKey = keyFactory.create(channel)
+            val result = database.withTransaction {
+                when (val current = checkEnqueue(draftId)) {
+                    is EnqueueCheck.Blocked -> current.result
+                    is EnqueueCheck.Ready -> {
+                        // Nếu kênh đổi trong lúc tạo khóa, đọc lại đích theo kênh mới.
+                        if (current.channel != channel) return@withTransaction null
+                        if (publishKey == null) return@withTransaction EnqueueResult.DestinationRequired
+
+                        val now = clock.nowMillis()
+                        val post = PostEntity(
+                            id = UUID.randomUUID().toString(),
+                            draftId = draftId,
+                            channel = channel,
+                            status = PostStatus.QUEUED,
+                            idempotencyKey = publishKey,
+                            remotePostId = null,
+                            url = null,
+                            errorMessage = null,
+                            attemptCount = 0,
+                            createdAtMillis = now,
+                            updatedAtMillis = now,
+                        )
+                        postDao.insertIfAbsent(post)
+                        EnqueueResult.Queued(post.id)
+                    }
+                }
+            } ?: continue
+            if (result is EnqueueResult.Queued) scheduler.schedule()
+            return result
         }
-        if (result is EnqueueResult.Queued) scheduler.schedule()
-        return result
+    }
+
+    /** Kiểm tra bản nháp và bài đã có trong cùng một transaction của caller. */
+    private suspend fun checkEnqueue(draftId: String): EnqueueCheck {
+        val draft = draftDao.getById(draftId) ?: return EnqueueCheck.Blocked(EnqueueResult.DraftNotFound)
+        if (!draft.approved) return EnqueueCheck.Blocked(EnqueueResult.NotApproved)
+
+        val existing = postDao.getByDraft(draftId)
+        existing.firstOrNull { it.status in ACTIVE_STATUSES }?.let {
+            return EnqueueCheck.Blocked(EnqueueResult.AlreadyActive(it.id, it.status))
+        }
+        existing.firstOrNull { it.status == PostStatus.PUBLISHED }?.let {
+            return EnqueueCheck.Blocked(EnqueueResult.AlreadyPublished(it.id, it.url))
+        }
+        return EnqueueCheck.Ready(draft.channel)
+    }
+
+    private sealed interface EnqueueCheck {
+        data class Blocked(val result: EnqueueResult) : EnqueueCheck
+        data class Ready(val channel: ChannelType) : EnqueueCheck
     }
 
     /**
@@ -318,7 +339,7 @@ class PublishQueueRepository @Inject constructor(
         private const val STALE_CHECK_MARGIN_MILLIS = 60 * 1000L
 
         /**
-         * Số lần gọi API tối đa khi kênh trả lỗi tạm thời (5xx, rate limit). Lần chưa gửi được request
+         * Số lần gọi API tối đa khi kênh trả lỗi an toàn để thử lại. Lần chưa gửi được request
          * (mất mạng, DNS, lỗi bắt tay TLS) không được tính vào `attemptCount`.
          */
         const val MAX_RETRYABLE_ATTEMPTS = 8

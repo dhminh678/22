@@ -65,7 +65,7 @@ internal class FacebookClient(
 
         return http.execute(request) { response, now ->
             val header = response.header("Retry-After")
-            httpRetry(response.code, header, now)?.let { return@execute it }
+            checkPublishHttpStatus(response.code, header, now)?.let { return@execute it }
             if (response.code == 408) throw SocketTimeoutException()
             val payload = response.readJson()
             if (!response.isSuccessful || payload?.containsKey("error") == true) {

@@ -1,9 +1,11 @@
 package com.lttbdd.socialagent.feature.publishing
 
+import android.content.DialogInterface
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
@@ -12,9 +14,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.lttbdd.socialagent.R
+import com.lttbdd.socialagent.core.model.ChannelType
 import com.lttbdd.socialagent.core.ui.components.AppDialog
 import com.lttbdd.socialagent.core.ui.components.AppSnackbar
+import com.lttbdd.socialagent.databinding.DialogPublishPermalinkBinding
 import com.lttbdd.socialagent.databinding.FragmentPublishStatusBinding
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -28,6 +33,7 @@ class PublishStatusFragment : Fragment() {
 
     private val viewModel: PublishStatusViewModel by viewModels()
     private lateinit var adapter: PublishStatusAdapter
+    private var confirmPublishedDialog: AlertDialog? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentPublishStatusBinding.inflate(inflater, container, false)
@@ -41,7 +47,7 @@ class PublishStatusFragment : Fragment() {
         adapter = PublishStatusAdapter(
             onPublishAll = viewModel::onPublishAll,
             onPublishChannel = viewModel::onPublishChannel,
-            onConfirmPublished = viewModel::onConfirmPublished,
+            onConfirmPublished = ::showConfirmPublished,
             onRequeue = viewModel::onRequeueRequested,
             onOpenPost = ::openPost,
         )
@@ -58,6 +64,30 @@ class PublishStatusFragment : Fragment() {
                 launch { viewModel.events.collect(::handleEvent) }
             }
         }
+    }
+
+    private fun showConfirmPublished(postId: String, channel: ChannelType) {
+        val input = DialogPublishPermalinkBinding.inflate(layoutInflater)
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.publish_status_permalink_title)
+            .setMessage(R.string.publish_status_permalink_message)
+            .setView(input.root)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.publish_status_confirm_published, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                val permalink = input.permalink.text?.toString().orEmpty()
+                if (viewModel.onConfirmPublished(postId, channel, permalink)) {
+                    dialog.dismiss()
+                } else {
+                    input.permalinkLayout.error = getString(R.string.publish_status_permalink_invalid)
+                }
+            }
+        }
+        dialog.setOnDismissListener { confirmPublishedDialog = null }
+        confirmPublishedDialog = dialog
+        dialog.show()
     }
 
     private fun render(state: PublishStatusUiState) {
@@ -89,6 +119,7 @@ class PublishStatusFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        confirmPublishedDialog?.dismiss()
         super.onDestroyView()
         _binding = null
     }

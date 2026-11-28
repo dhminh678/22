@@ -53,7 +53,7 @@ internal class LinkedInClient(
             .build()
         return http.execute(request) { response, now ->
             val header = response.header("Retry-After")
-            httpRetry(response.code, header, now)?.let { return@execute it }
+            checkPublishHttpStatus(response.code, header, now)?.let { return@execute it }
             if (response.code == 408) throw SocketTimeoutException()
             if (!response.isSuccessful) return@execute publishError(type, response.code, header, response.readJson(), now)
             val post = response.header("x-restli-id")?.takeIf(postUrn::matches)

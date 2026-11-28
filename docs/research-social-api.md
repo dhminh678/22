@@ -402,7 +402,7 @@ Nếu Meta hỗ trợ cấu hình custom scheme và bỏ qua secret qua `code_ve
    > 2. **Gọi API:** Khi nhận được response thành công, ghi ngay `remotePostId` và chuyển sang trạng thái thành công trong transaction riêng.
    > 3. **Phân loại lỗi mạng khi thất bại:**
    >    - Lỗi chắc chắn **chưa gửi** được request (DNS thất bại `UnknownHostException`, không kết nối được `ConnectException`): cho phép retry theo backoff thông thường.
-   >    - Lỗi **không rõ kết quả / có thể đã tới server** (`SocketTimeoutException` sau khi đã gửi body, lỗi khi đọc response stream, process bị hủy giữa chừng): đánh dấu `outcomeUnknown = true`. **Tuyệt đối không gọi publish lại ngay**.
+   >    - Lỗi **không rõ kết quả / có thể đã tới server** (`SocketTimeoutException` sau khi đã gửi body, lỗi khi đọc response stream, HTTP 5xx sau POST, process bị hủy giữa chừng): đánh dấu `outcomeUnknown = true`. **Tuyệt đối không gọi publish lại ngay**.
    > 4. **Cơ chế đối soát (Reconciliation) trước khi retry:** Khi Worker chạy lại và gặp bài viết đang ở trạng thái `PUBLISHING` mà chưa có `remotePostId` (hoặc `outcomeUnknown = true`):
    >    - Worker **không được đăng lại ngay**, mà phải gọi đối soát: `GET https://graph.facebook.com/v26.0/{page-id}/feed?since={attemptStartedAt - 60s}&fields=id,message,created_time`.
    >    - So khớp `message` bài đăng và thời gian tạo `created_time`:

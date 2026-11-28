@@ -19,6 +19,7 @@ import com.lttbdd.socialagent.core.social.SocialChannelClient
 import com.lttbdd.socialagent.data.model.OAuthToken
 import com.lttbdd.socialagent.data.social.PublishDestinations
 import com.lttbdd.socialagent.data.social.PublishingAccounts
+import com.lttbdd.socialagent.data.social.checkPublishHttpStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -155,9 +156,9 @@ class PublishQueueRepositoryTest {
             )
             val scheduledBefore = scheduler.calls
 
-            assertTrue(runCatching { repo.enqueue(draftId) }.exceptionOrNull() is IllegalStateException)
+            assertEquals(EnqueueResult.DestinationRequired, repo.enqueue(draftId))
             accounts = emptyList()
-            assertTrue(runCatching { repo.enqueue(draftId) }.exceptionOrNull() is IllegalStateException)
+            assertEquals(EnqueueResult.DestinationRequired, repo.enqueue(draftId))
             assertTrue(db.postDao().getByDraft(draftId).isEmpty())
             assertEquals(scheduledBefore, scheduler.calls)
 
@@ -169,6 +170,64 @@ class PublishQueueRepositoryTest {
             accounts = connected
             assertEquals(EnqueueResult.AlreadyActive(postId, PostStatus.QUEUED), repo.enqueue(draftId))
         }
+    }
+
+    @Test
+    fun `enqueue skips account lookup for missing unapproved active and published drafts`() = runTest {
+        val repo = repository(keyFactory = PublishKeyFactory { error("Không cần đọc tài khoản") })
+        assertEquals(EnqueueResult.DraftNotFound, repo.enqueue("d1"))
+        saveDraft(approved = false)
+        assertEquals(EnqueueResult.NotApproved, repo.enqueue("d1"))
+
+        saveDraft()
+        val postId = queuedId(repository())
+        assertEquals(EnqueueResult.AlreadyActive(postId, PostStatus.QUEUED), repo.enqueue("d1"))
+        db.postDao().update(post(postId).copy(status = PostStatus.PUBLISHED, url = "https://example.test/post"))
+        assertEquals(EnqueueResult.AlreadyPublished(postId, "https://example.test/post"), repo.enqueue("d1"))
+        assertEquals(1, scheduler.calls)
+    }
+
+    @Test
+    fun `enqueue recalculates key when approved draft changes channel during destination lookup`() = runTest {
+        saveDraft()
+        val reads = mutableListOf<ChannelType>()
+        val repo = repository(keyFactory = PublishKeyFactory { channel ->
+            reads += channel
+            if (channel == ChannelType.FACEBOOK) {
+                saveDraft(channel = ChannelType.LINKEDIN)
+                null
+            } else {
+                "linkedin-key"
+            }
+        })
+
+        val queued = post(queuedId(repo))
+        assertEquals(listOf(ChannelType.FACEBOOK, ChannelType.LINKEDIN), reads)
+        assertEquals(ChannelType.LINKEDIN, queued.channel)
+        assertEquals("linkedin-key", queued.idempotencyKey)
+        assertEquals(1, scheduler.calls)
+    }
+
+    @Test
+    fun `enqueue rechecks approval and existing rows after account lookup`() = runTest {
+        saveDraft()
+        val revoked = repository(keyFactory = PublishKeyFactory {
+            saveDraft(approved = false)
+            "old-key"
+        })
+        assertEquals(EnqueueResult.NotApproved, revoked.enqueue("d1"))
+        assertTrue(db.postDao().getByDraft("d1").isEmpty())
+
+        saveDraft()
+        var queuedByOtherCaller = ""
+        val concurrent = repository(keyFactory = PublishKeyFactory {
+            queuedByOtherCaller = queuedId(repository())
+            null
+        })
+        val result = concurrent.enqueue("d1")
+        assertEquals(EnqueueResult.AlreadyActive(queuedByOtherCaller, PostStatus.QUEUED), result)
+        assertEquals(1, db.postDao().getByDraft("d1").size)
+        assertEquals(1, scheduler.calls)
     }
 
     @Test
@@ -358,6 +417,23 @@ class PublishQueueRepositoryTest {
         assertTrue(pending.outcomeUnknown)
         assertEquals("outcome_unknown (SocketTimeoutException)", pending.errorMessage)
         assertTrue(repo.enqueue("d1") is EnqueueResult.AlreadyActive)
+    }
+
+    @Test
+    fun `server error after publish does not schedule another attempt`() = runTest {
+        saveDraft()
+        val repo = repository()
+        val id = queuedId(repo)
+        val failure = runCatching { checkPublishHttpStatus(503, "3", nowMillis) }.exceptionOrNull()
+        facebook.next(checkNotNull(failure))
+
+        assertEquals(1, repo.processQueue().needsConfirmation)
+        assertFalse(repo.processQueue().shouldRetry)
+        assertEquals(PostStatus.PUBLISHING, post(id).status)
+        assertTrue(post(id).outcomeUnknown)
+        assertNull(post(id).nextAttemptAtMillis)
+        assertEquals(1, facebook.calls)
+        assertEquals(1, scheduler.calls)
     }
 
     @Test

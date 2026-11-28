@@ -254,6 +254,7 @@ class ReviewDraftsViewModelTest {
             EnqueueResult.AlreadyPublished("p1", "https://example.com/p1") to
                 R.string.review_publish_already_published,
             EnqueueResult.NotApproved to R.string.review_publish_blocked_unapproved,
+            EnqueueResult.DestinationRequired to R.string.review_publish_destination_required,
             EnqueueResult.DraftNotFound to R.string.review_draft_action_failed,
         )
         for ((result, expectedMessage) in cases) {

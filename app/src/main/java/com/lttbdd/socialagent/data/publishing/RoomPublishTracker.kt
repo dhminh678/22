@@ -29,6 +29,9 @@ class RoomPublishTracker @Inject constructor(
 
     override suspend fun confirmPublished(postId: String): Boolean = queue.confirmPublishedManually(postId)
 
+    override suspend fun confirmPublishedWithPermalink(postId: String, url: String): Boolean =
+        queue.confirmPublishedManually(postId, url)
+
     override suspend fun requeueAfterCheck(postId: String): Boolean = queue.requeueAfterUserCheck(postId)
 
     companion object {

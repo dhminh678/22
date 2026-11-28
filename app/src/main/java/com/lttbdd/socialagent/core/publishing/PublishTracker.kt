@@ -40,6 +40,9 @@ interface PublishTracker {
     /** Người dùng đã thấy bài trên mạng xã hội. Trả về false nếu bài không còn chờ xác nhận. */
     suspend fun confirmPublished(postId: String): Boolean
 
+    /** Xác nhận bài đã đăng và lưu URL đã được kiểm tra trong cùng thao tác. */
+    suspend fun confirmPublishedWithPermalink(postId: String, url: String): Boolean = false
+
     /** Người dùng đã kiểm tra và bài chưa lên: đưa lại hàng đợi. Trả về false nếu bài không còn chờ xác nhận. */
     suspend fun requeueAfterCheck(postId: String): Boolean
 }

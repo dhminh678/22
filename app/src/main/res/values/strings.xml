@@ -281,6 +281,7 @@
     <string name="review_publish_already_queued">This draft is already waiting in the publishing queue.</string>
     <string name="review_publish_in_progress">This draft is being published or waiting for you to confirm its result.</string>
     <string name="review_publish_already_published">This draft has already been published.</string>
+    <string name="review_publish_destination_required">Connect a publishing account or leave only one eligible account connected for this channel.</string>
 
     <!-- Feature F4: Channel Preview, Manual Edit & Character Counter (Issue #34) -->
     <string name="preview_header_title">Preview &amp; Edit Draft</string>
@@ -358,6 +359,10 @@
     <string name="publish_status_needs_approval_hint">Approve this draft in Drafts &amp; Approval before publishing.</string>
     <string name="publish_status_needs_confirmation_hint">We could not tell whether this post went live. Check the channel, then choose below.</string>
     <string name="publish_status_confirm_published">It is live</string>
+    <string name="publish_status_permalink_title">Confirm that the post is live</string>
+    <string name="publish_status_permalink_message">If you have the link to the original post, paste it below so you can open it from Publishing status.</string>
+    <string name="publish_status_permalink_hint">Post link (optional)</string>
+    <string name="publish_status_permalink_invalid">Enter an HTTPS post link for this channel or leave the field blank.</string>
     <string name="publish_status_confirm_not_published">Not live, publish again</string>
     <string name="publish_status_requeue_dialog_title">Publish this post again?</string>
     <string name="publish_status_requeue_dialog_message">Only continue if you checked the channel and the post is not there. Otherwise it may be posted twice.</string>
@@ -385,4 +390,5 @@
     <string name="publish_error_storage">Could not save to the device storage.</string>
     <string name="publish_error_unknown">The channel returned an error.</string>
     <string name="publish_status_action_failed">Could not update the publishing queue. Please try again.</string>
+    <string name="publish_status_some_destinations_required">Some drafts could not be queued. Each channel needs exactly one eligible account connected to publish.</string>
 </resources>
